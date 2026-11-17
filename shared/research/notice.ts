@@ -1,0 +1,4 @@
+/** Version of the short privacy notice shown before the questionnaire (art. 13). */
+export const NOTICE_VERSION = "2026-11-v1";
+
+export const NOTICE_SHORT = `Manuscrit · DataSensia traite vos réponses pour vous proposer des sujets de recherche (exécution du service, art. 6.1.b RGPD). Les textes libres sont filtrés et un profil pseudonymisé est transmis au fournisseur d’IA configuré, en tant que sous-traitant. Aucune décision automatisée n’est prise à votre égard (art. 22). Mode session uniquement par défaut : rien n’est conservé sur le serveur après la génération. Conservez votre profil uniquement si vous y consentez explicitement. Vous disposez de droits d’accès, de rectification, d’effacement et de retrait du consentement. Contact DPO et réclamation CNIL : voir la politique de confidentialité.`;

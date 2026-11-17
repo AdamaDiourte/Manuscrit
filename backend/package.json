@@ -1,0 +1,22 @@
+{
+  "name": "@manuscrit/backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx --watch src/server.ts",
+    "build": "tsc --noEmit && esbuild src/server.ts --bundle --platform=node --target=node24 --format=esm --packages=external --outfile=dist/server.js",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "pg": "8.16.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5",
+    "@types/node": "^24",
+    "esbuild": "^0.27.0",
+    "tsx": "^4.20.0",
+    "typescript": "5.9.3"
+  }
+}

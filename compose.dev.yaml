@@ -1,0 +1,13 @@
+services:
+  database:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: manuscrit
+      POSTGRES_DB: manuscrit
+      POSTGRES_PASSWORD: local_dev
+    ports: ["127.0.0.1:55432:5432"]
+    volumes:
+      - dev_database:/var/lib/postgresql/data
+      - ./backend/db/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+volumes:
+  dev_database:

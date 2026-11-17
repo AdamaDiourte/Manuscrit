@@ -1,0 +1,18 @@
+DOMAIN=manuscrit.example.org
+POSTGRES_PASSWORD=
+OIDC_ISSUER=
+OIDC_CLIENT_ID=
+OIDC_CLIENT_SECRET=
+EMAIL_DOMAINS=example.org
+COOKIE_SECRET=
+AI_BASE_URL=
+AI_MODEL=
+AI_API_KEY=
+STRIPE_SECRET_KEY=
+STRIPE_PRICE_PLUS=
+STRIPE_PRICE_PRO=
+# Application-level AES-GCM key for free-text answers and generated topics (étape D).
+# Generate a 32-byte secret; leave empty in étape A (no server persistence).
+PROFILE_ENCRYPTION_KEY=
+# Optional dedicated secret for ephemeral generation tickets (falls back to COOKIE_SECRET).
+TOPICS_TICKET_SECRET=

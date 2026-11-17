@@ -1,0 +1,74 @@
+name: manuscrit
+services:
+  edge:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Domaine requis}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - certificates:/data
+    depends_on: [identity, application]
+  identity:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.12.0
+    restart: unless-stopped
+    environment:
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
+      OAUTH2_PROXY_UPSTREAMS: http://edge:8080
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${OIDC_ISSUER:?Émetteur OIDC requis}
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID:?Identifiant OIDC requis}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Secret OIDC requis}
+      OAUTH2_PROXY_COOKIE_SECRET: ${COOKIE_SECRET:?Clé de cookie requise}
+      OAUTH2_PROXY_REDIRECT_URL: https://${DOMAIN}/oauth2/callback
+      OAUTH2_PROXY_EMAIL_DOMAINS: ${EMAIL_DOMAINS:?Domaines autorisés requis}
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
+      OAUTH2_PROXY_PASS_BASIC_AUTH: "false"
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+  application:
+    build:
+      context: ../..
+      dockerfile: deploy/ovh/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      PGHOST: database
+      APP_BASE_URL: https://${DOMAIN}
+      PGUSER: manuscrit
+      PGDATABASE: manuscrit
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Mot de passe PostgreSQL requis}
+      PG_POOL_SIZE: ${PG_POOL_SIZE:-8}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PRICE_PLUS: ${STRIPE_PRICE_PLUS:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+    depends_on:
+      database:
+        condition: service_healthy
+  database:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: manuscrit
+      POSTGRES_USER: manuscrit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Mot de passe PostgreSQL requis}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ../../backend/db/001_initial.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U manuscrit"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+volumes:
+  certificates:
+  postgres:
