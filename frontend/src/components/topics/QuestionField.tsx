@@ -69,7 +69,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
         }
         aria-hidden={skipped}
       >
-        {!skipped && question.type === "single" && (
+        {question.type === "single" && (
           <div className="topic-options">
             {(question.options || []).map((opt) => (
               <label key={opt.value} className="topic-option">
@@ -79,6 +79,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
                   value={opt.value}
                   checked={value === opt.value}
                   onChange={() => onChange(opt.value)}
+                  tabIndex={skipped ? -1 : undefined}
                 />
                 <span>{opt.label}</span>
               </label>
@@ -86,7 +87,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
           </div>
         )}
 
-        {!skipped && question.type === "multi" && (
+        {question.type === "multi" && (
           <div className="topic-options">
             {(question.options || []).map((opt) => {
               const arr = Array.isArray(value) ? (value as string[]) : [];
@@ -96,6 +97,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
                   <input
                     type="checkbox"
                     checked={checked}
+                    tabIndex={skipped ? -1 : undefined}
                     onChange={() =>
                       onChange(
                         checked
@@ -111,7 +113,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
           </div>
         )}
 
-        {!skipped && question.type === "text_short" && (
+        {question.type === "text_short" && (
           <div className="topic-text-block">
             <textarea
               rows={3}
@@ -120,6 +122,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
               onChange={(e) => setText(e.target.value)}
               aria-describedby={question.id + "-warn"}
               placeholder="Saisissez votre réponse…"
+              tabIndex={skipped ? -1 : undefined}
             />
             <small id={question.id + "-warn"} className="topic-warn">
               {question.sensitiveRisk === "medium"
@@ -142,7 +145,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
           </div>
         )}
 
-        {!skipped && question.type === "multi_scale" && (
+        {question.type === "multi_scale" && (
           <div className="topic-scales">
             {(question.options || []).map((opt) => {
               const map =
@@ -155,6 +158,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
                   <span>{opt.label}</span>
                   <select
                     value={current === undefined ? "" : String(current)}
+                    tabIndex={skipped ? -1 : undefined}
                     onChange={(e) => {
                       const next = { ...map };
                       if (e.target.value === "") delete next[opt.value];
@@ -181,7 +185,7 @@ export default function QuestionField({ question, value, onChange }: Props) {
           </div>
         )}
 
-        {!skipped && question.type === "repeatable_group" && (
+        {question.type === "repeatable_group" && (
           <RepeatableGroup
             question={question}
             value={

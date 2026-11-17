@@ -1,9 +1,11 @@
+import { useEffect, useRef } from "react";
 import {
   TOPIC_BLOCKS,
   topicQuestions,
 } from "../../../../shared/research/topicQuestions";
 import { isQuestionVisible } from "../../../../shared/research/topicTypes";
 import QuestionField from "./QuestionField";
+import AnimatedReveal from "./AnimatedReveal";
 
 type Props = {
   step: number;
@@ -28,6 +30,8 @@ const OTHER_VALUE: Record<string, string> = {
   writing_language: "other",
 };
 
+const EXIT_MS = 280;
+
 export default function TopicQuestionnaire({
   step,
   answers,
@@ -40,20 +44,37 @@ export default function TopicQuestionnaire({
 }: Props) {
   const total = TOPIC_BLOCKS.length;
   const block = TOPIC_BLOCKS[step - 1];
-  const questions = topicQuestions.filter(
-    (q) => q.block === block.id && isQuestionVisible(q, answers),
+  const blockQuestions = topicQuestions.filter((q) => q.block === block.id);
+  const visibleQuestions = blockQuestions.filter((q) =>
+    isQuestionVisible(q, answers),
   );
+  const answersRef = useRef(answers);
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
 
   function setAnswer(id: string, value: unknown) {
     const next = { ...answers, [id]: value };
     const otherId = OTHER_CLEAR[id];
-    if (otherId && value !== OTHER_VALUE[id]) delete next[otherId];
+    const clearingOther =
+      !!otherId && value !== OTHER_VALUE[id] && answers[otherId] !== undefined;
+
+    // Keep linked "précisez" value during exit animation, then clear it.
     onAnswers(next);
+    if (clearingOther && otherId) {
+      window.setTimeout(() => {
+        const current = { ...answersRef.current };
+        if (current[id] !== OTHER_VALUE[id]) {
+          delete current[otherId];
+          onAnswers(current);
+        }
+      }, EXIT_MS);
+    }
   }
 
   function validateBlock1(): string | null {
     if (block.id !== 1) return null;
-    for (const q of questions) {
+    for (const q of visibleQuestions) {
       if (!q.required) continue;
       const v = answers[q.id];
       if (v === undefined || v === null || v === "")
@@ -106,15 +127,18 @@ export default function TopicQuestionnaire({
           next();
         }}
       >
-        {questions.map((q) => (
-          <div key={q.id} className="topic-field-enter">
-            <QuestionField
-              question={q}
-              value={answers[q.id]}
-              onChange={(v) => setAnswer(q.id, v)}
-            />
-          </div>
-        ))}
+        {blockQuestions.map((q) => {
+          const show = isQuestionVisible(q, answers);
+          return (
+            <AnimatedReveal key={q.id} show={show} durationMs={EXIT_MS}>
+              <QuestionField
+                question={q}
+                value={answers[q.id]}
+                onChange={(v) => setAnswer(q.id, v)}
+              />
+            </AnimatedReveal>
+          );
+        })}
 
         {error && <p role="alert">{error}</p>}
 
