@@ -2,6 +2,7 @@ import { buildPseudonymizedProfile } from "../privacy/buildPseudonymizedProfile"
 import { chatCompletion } from "../llm/client";
 import { buildUserPrompt, systemPrompt } from "./promptBuilder";
 import { parseTopicsOutput } from "./validateOutput";
+import { simulateTopics } from "./simulateContent";
 import type {
   RegenReason,
   TopicAxis,
@@ -17,7 +18,26 @@ export async function generateTopics(
     previousTitle?: string;
     previousTopics?: TopicsOutput["topics"];
   },
-): Promise<{ topics: TopicsOutput["topics"]; model: string; tokens?: number }> {
+  options?: { simulate?: boolean },
+): Promise<{
+  topics: TopicsOutput["topics"];
+  model: string;
+  tokens?: number;
+  simulated?: boolean;
+}> {
+  if (options?.simulate || !env.AI_API_KEY) {
+    let topics = simulateTopics(answers);
+    if (regenerate?.previousTopics?.length === 3) {
+      const replacement = topics.find((t) => t.axis === regenerate.axis);
+      if (replacement) {
+        topics = regenerate.previousTopics.map((t) =>
+          t.axis === regenerate.axis ? replacement : t,
+        );
+      }
+    }
+    return { topics, model: "simulation", simulated: true };
+  }
+
   const profile = buildPseudonymizedProfile(answers);
   const messages = [
     { role: "system" as const, content: systemPrompt() },

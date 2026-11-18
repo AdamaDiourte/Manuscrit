@@ -84,18 +84,22 @@ export function buildPseudonymizedProfile(
         !Object.keys(cleaned).length)
     )
       continue;
-    // Prefer "aucune" over numeric 0 so the model does not misread the scale.
+    // Send scale labels (not bare numbers) so the model reads levels correctly.
     if (
       question.type === "multi_scale" &&
       cleaned &&
       typeof cleaned === "object" &&
       !Array.isArray(cleaned)
     ) {
+      const min = question.min ?? 0;
       cleaned = Object.fromEntries(
-        Object.entries(cleaned as Record<string, unknown>).map(([k, v]) => [
-          k,
-          v === 0 ? "aucune" : v,
-        ]),
+        Object.entries(cleaned as Record<string, unknown>).map(([k, v]) => {
+          if (typeof v !== "number") return [k, v];
+          const label =
+            question.scaleLabels?.[v - min] ??
+            (v === 0 ? "aucune" : String(v));
+          return [k, label];
+        }),
       );
     }
     fields[question.id] = cleaned;

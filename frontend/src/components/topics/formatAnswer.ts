@@ -24,9 +24,11 @@ export function formatAnswer(questionId: string, value: unknown): string {
     return value.map((v) => optionLabel(questionId, String(v))).join(", ");
 
   if (q.type === "multi_scale" && value && typeof value === "object") {
+    const min = q.min ?? 0;
     return Object.entries(value as Record<string, number>)
       .map(([k, n]) => {
-        const level = n === 0 ? "aucune" : String(n);
+        const level =
+          q.scaleLabels?.[n - min] ?? (n === 0 ? "Aucun" : String(n));
         return optionLabel(questionId, k) + " : " + level;
       })
       .join(", ");

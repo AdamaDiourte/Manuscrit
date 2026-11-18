@@ -16,6 +16,8 @@ export function buildUserPrompt(input: {
       {
         axis: "mastery | ambition | discovery",
         title: "string",
+        context:
+          "2 à 3 phrases max : situer le sujet (actualité, histoire, débat public, enjeu disciplinaire)",
         research_question: "string",
         hypotheses: ["string"],
         field_or_corpus: "string",

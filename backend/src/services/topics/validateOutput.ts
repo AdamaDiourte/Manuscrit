@@ -4,6 +4,12 @@ import type { TopicsOutput } from "../../../../shared/research/topicTypes";
 const topicSchema = z.object({
   axis: z.enum(["mastery", "ambition", "discovery"]),
   title: z.string().trim().min(3).max(220),
+  context: z
+    .string()
+    .trim()
+    .max(320)
+    .optional()
+    .transform((v) => v || ""),
   research_question: z.string().trim().min(8).max(600),
   hypotheses: z.array(z.string().trim().min(3).max(400)).min(1).max(5),
   field_or_corpus: z.string().trim().min(3).max(500),

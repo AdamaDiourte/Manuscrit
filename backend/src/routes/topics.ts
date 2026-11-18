@@ -6,6 +6,7 @@ import {
   validateConsents,
 } from "../services/topics/validateAnswers";
 import { generateTopics } from "../services/topics/generate";
+import { generateTopicDocument } from "../services/topics/generateDocument";
 import {
   consumeRegen,
   issueTicket,
@@ -102,8 +103,11 @@ export async function POST_generate(req: Request) {
       noticeVersion: NOTICE_VERSION,
     };
 
-    token = await reserveAnalysis(bucket, prefix);
-    const result = await generateTopics(answers, config);
+    const simulate = Boolean(body.simulate);
+    if (!simulate) token = await reserveAnalysis(bucket, prefix);
+    const result = await generateTopics(answers, config, undefined, {
+      simulate,
+    });
     const ticket = issueTicket(uid, config, result.topics, 3);
     token = "";
     // Technical metadata only — never log answers or prompts.
@@ -115,6 +119,7 @@ export async function POST_generate(req: Request) {
         at: new Date().toISOString(),
         tokens: result.tokens ?? null,
         model: result.model,
+        simulated: Boolean(result.simulated),
       }),
     );
     return reply({
@@ -122,7 +127,8 @@ export async function POST_generate(req: Request) {
       model: result.model,
       ticket,
       regenerationsRemaining: 3,
-      aiGenerated: true,
+      aiGenerated: !result.simulated,
+      simulated: Boolean(result.simulated),
       consents: consentMeta,
       noticeVersion: NOTICE_VERSION,
       persistence: "none",
@@ -156,6 +162,34 @@ const regenSchema = z.object({
   reason: z.enum(["too_far", "too_ambitious", "too_banal", "already_done"]),
   answers: z.record(z.string(), z.unknown()),
   consents: z.unknown(),
+  simulate: z.boolean().optional(),
+});
+
+const topicPayloadSchema = z.object({
+  axis: z.enum(["mastery", "ambition", "discovery"]),
+  title: z.string().trim().min(3).max(220),
+  context: z.string().trim().max(320).optional().default(""),
+  research_question: z.string().trim().min(8).max(600),
+  hypotheses: z.array(z.string().trim().min(3).max(400)).min(1).max(5),
+  field_or_corpus: z.string().trim().min(3).max(500),
+  method: z.string().trim().min(3).max(500),
+  feasibility: z.object({
+    level: z.enum(["high", "medium", "low"]),
+    risks: z.array(z.string().trim().min(2).max(300)).max(6),
+    first_steps: z.array(z.string().trim().min(2).max(300)).min(1).max(6),
+  }),
+  rationale: z.string().trim().min(8).max(800),
+  keywords_fr: z.array(z.string().trim().min(1).max(80)).min(2).max(12),
+  keywords_en: z.array(z.string().trim().min(1).max(80)).min(2).max(12),
+  ethical_notes: z.string().trim().max(800).nullable(),
+});
+
+const documentSchema = z.object({
+  kind: z.enum(["research_project", "work_plan"]),
+  topic: topicPayloadSchema,
+  answers: z.record(z.string(), z.unknown()),
+  consents: z.unknown(),
+  simulate: z.boolean().optional(),
 });
 
 export async function POST_regenerate(req: Request) {
@@ -192,12 +226,17 @@ export async function POST_regenerate(req: Request) {
     const previousTitle = previousTopics?.find((t) => t.axis === body.axis)
       ?.title as string | undefined;
 
-    const result = await generateTopics(answers, config, {
-      axis: body.axis,
-      reason: body.reason,
-      previousTitle,
-      previousTopics: previousTopics as any,
-    });
+    const result = await generateTopics(
+      answers,
+      config,
+      {
+        axis: body.axis,
+        reason: body.reason,
+        previousTitle,
+        previousTopics: previousTopics as any,
+      },
+      { simulate: Boolean(body.simulate) },
+    );
     const { nextToken, payload } = consumeRegen(
       body.ticket,
       uid,
@@ -214,6 +253,7 @@ export async function POST_regenerate(req: Request) {
         axis: body.axis,
         rem: payload.rem,
         tokens: result.tokens ?? null,
+        simulated: Boolean(result.simulated),
       }),
     );
 
@@ -222,7 +262,8 @@ export async function POST_regenerate(req: Request) {
       model: result.model,
       ticket: nextToken,
       regenerationsRemaining: payload.rem,
-      aiGenerated: true,
+      aiGenerated: !result.simulated,
+      simulated: Boolean(result.simulated),
       noticeVersion: NOTICE_VERSION,
       persistence: "none",
     });
@@ -240,6 +281,72 @@ export async function POST_regenerate(req: Request) {
     );
     return reply(
       { error: e.message || "Régénération indisponible." },
+      Number.isInteger(e.status) ? e.status : 502,
+    );
+  }
+}
+
+export async function POST_document(req: Request) {
+  const uid = uidOf(req);
+  const config = configOf();
+  if (!uid) return reply({ error: "Connexion requise." }, 403);
+
+  const limited = topicsRateLimit(uid);
+  if (!limited.ok)
+    return reply(
+      {
+        error: "Trop de demandes. Réessayez dans quelques minutes.",
+        retryAfterSec: limited.retryAfterSec,
+      },
+      429,
+    );
+
+  try {
+    const body = documentSchema.parse(await req.json());
+    validateConsents(body.consents);
+    const answers = validateAnswersPayload(body.answers);
+    const result = await generateTopicDocument({
+      answers,
+      topic: body.topic,
+      kind: body.kind,
+      env: config,
+      simulate: Boolean(body.simulate),
+    });
+
+    console.info(
+      JSON.stringify({
+        event: "topics.document",
+        uidPseudo: uid.slice(0, 8),
+        status: "ok",
+        at: new Date().toISOString(),
+        kind: body.kind,
+        model: result.model,
+        simulated: result.simulated,
+      }),
+    );
+
+    return reply({
+      document: result.document,
+      file: result.file,
+      model: result.model,
+      simulated: result.simulated,
+      aiGenerated: !result.simulated,
+      noticeVersion: NOTICE_VERSION,
+    });
+  } catch (e: any) {
+    if (e?.name === "ZodError")
+      return reply({ error: "Demande de document invalide." }, 400);
+    console.info(
+      JSON.stringify({
+        event: "topics.document",
+        uidPseudo: uid.slice(0, 8),
+        status: "error",
+        at: new Date().toISOString(),
+        code: Number.isInteger(e.status) ? e.status : 502,
+      }),
+    );
+    return reply(
+      { error: e.message || "Document indisponible." },
       Number.isInteger(e.status) ? e.status : 502,
     );
   }

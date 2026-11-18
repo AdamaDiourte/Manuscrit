@@ -1,4 +1,4 @@
-import type { Question } from "./topicTypes";
+import type { Question, QuestionOption } from "./topicTypes";
 
 const W = {
   F: { M: 0, A: 0, D: 0, F: 3 },
@@ -9,62 +9,104 @@ const W = {
   MF: { M: 2, A: 0, D: 0, F: 2 },
 } as const;
 
-const projectTypes = [
-  ["licence", "Mémoire Licence"],
-  ["m1", "Mémoire recherche M1"],
-  ["m2", "Mémoire recherche M2"],
-  ["pro", "Mémoire professionnel"],
-  ["internship", "Rapport de stage"],
-  ["thesis", "Thèse"],
-  ["article", "Article scientifique"],
-  ["talk", "Communication"],
-  ["other", "Autre"],
-].map(([value, label]) => ({ value, label }));
+/** Alphabetic FR sort; "Autre" / value other always last. */
+function withAutreLast(options: QuestionOption[]): QuestionOption[] {
+  const isOther = (o: QuestionOption) =>
+    o.value === "other" ||
+    o.value === "autre" ||
+    /^autre\b/i.test(o.label);
+  const rest = options
+    .filter((o) => !isOther(o))
+    .sort((a, b) =>
+      a.label.localeCompare(b.label, "fr", { sensitivity: "base" }),
+    );
+  const other = options.filter(isOther);
+  return [...rest, ...other];
+}
 
-const disciplines = [
-  "Sociologie",
-  "Science politique",
-  "Anthropologie",
-  "Histoire",
-  "Géographie",
-  "Économie",
-  "Droit",
-  "Psychologie",
-  "Sciences de l’éducation",
-  "Sciences de l’information et de la communication",
-  "Lettres",
-  "Philosophie",
-  "Linguistique",
-  "Études urbaines",
-  "Santé publique",
-  "Gestion / management",
-  "Informatique",
-  "Statistique",
-  "Autre",
-].map((label) => ({
-  value: label
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_|_$/g, ""),
-  label,
+const projectTypeGroups = [
+  {
+    label: "Mémoires et doctorat",
+    // Ordre pédagogique volontaire (Licence → Master → Pro → Doctorat)
+    options: [
+      ["licence", "Mémoire Licence"],
+      ["m1", "Mémoire recherche M1"],
+      ["m2", "Mémoire recherche M2"],
+      ["pro", "Mémoire professionnel"],
+      ["thesis", "Thèse / doctorat"],
+    ],
+  },
+  {
+    label: "Article, dossier et fiche",
+    options: [
+      ["article", "Article scientifique"],
+      ["research_dossier", "Dossier de recherche"],
+      ["reading_sheet", "Fiche de lecture"],
+    ],
+  },
+  {
+    label: "Autres",
+    options: [
+      ["internship", "Rapport de stage"],
+      ["other", "Autre"],
+    ],
+  },
+].map((group) => ({
+  label: group.label,
+  options: group.options.map(([value, label]) => ({ value, label })),
 }));
 
-const methodOptions = [
-  ["interviews", "Entretiens"],
-  ["observation", "Observation"],
-  ["survey", "Questionnaire"],
-  ["desc_stats", "Statistique descriptive"],
-  ["infer_stats", "Statistique inférentielle / régression"],
-  ["content_analysis", "Analyse de contenu / discours"],
-  ["archives", "Archives"],
-  ["lit_review", "Revue de littérature"],
-  ["gis", "Cartographie / SIG"],
-  ["experiment", "Expérimentation"],
-  ["nlp", "Analyse textuelle automatisée"],
-  ["programming", "Programmation"],
-].map(([value, label]) => ({ value, label }));
+const projectTypes = projectTypeGroups.flatMap((group) => group.options);
+
+const disciplines = withAutreLast(
+  [
+    "Anthropologie",
+    "Droit",
+    "Économie",
+    "Études urbaines",
+    "Géographie",
+    "Gestion / management",
+    "Histoire",
+    "Informatique",
+    "Lettres",
+    "Linguistique",
+    "Philosophie",
+    "Psychologie",
+    "Santé publique",
+    "Science politique",
+    "Sciences de l’éducation",
+    "Sciences de l’information et de la communication",
+    "Sociologie",
+    "Statistique",
+    "Autre",
+  ].map((label) => ({
+    value: label
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, ""),
+    label,
+  })),
+);
+
+const methodOptions = withAutreLast(
+  [
+    ["interviews", "Entretiens"],
+    ["observation", "Observation"],
+    ["survey", "Questionnaire"],
+    ["desc_stats", "Statistique descriptive"],
+    ["infer_stats", "Statistique inférentielle / régression"],
+    ["content_analysis", "Analyse de contenu / discours"],
+    ["archives", "Archives"],
+    ["lit_review", "Revue de littérature"],
+    ["gis", "Cartographie / SIG"],
+    ["experiment", "Expérimentation"],
+    ["nlp", "Analyse textuelle automatisée"],
+    ["programming", "Programmation"],
+    ["other", "Autre"],
+  ].map(([value, label]) => ({ value, label })),
+);
 
 const skip = true;
 
@@ -77,6 +119,7 @@ export const topicQuestions: Question[] = [
     label: "Quel type de projet préparez-vous ?",
     type: "single",
     options: projectTypes,
+    optionGroups: projectTypeGroups,
     required: true,
     weights: W.F,
     sensitiveRisk: "none",
@@ -136,9 +179,7 @@ export const topicQuestions: Question[] = [
     type: "single",
     options: [
       { value: "free", label: "Libre" },
-      { value: "list", label: "Liste imposée" },
-      { value: "host", label: "Imposé par la structure de stage" },
-      { value: "lab", label: "Lié à un laboratoire ou à un directeur" },
+      { value: "imposed", label: "Imposé" },
     ],
     required: true,
     weights: W.F,
@@ -146,17 +187,27 @@ export const topicQuestions: Question[] = [
     sentToLLM: true,
   },
   {
+    id: "imposed_by",
+    block: 1,
+    label: "Par qui le sujet est-il imposé ?",
+    help: "Structure de stage, laboratoire, enseignant, liste… sans nommer de personnes.",
+    type: "text_short",
+    required: true,
+    maxLength: 200,
+    showIf: { field: "topic_freedom", equals: "imposed" },
+    weights: W.F,
+    sensitiveRisk: "low",
+    sentToLLM: true,
+  },
+  {
     id: "imposed_theme",
     block: 1,
-    label: "Thème imposé ou retenu dans la liste",
+    label: "Thème imposé ou retenu",
     help: "Indiquez le thème, sans nommer de personnes.",
     type: "text_short",
     required: false,
     maxLength: 300,
-    showIf: {
-      field: "topic_freedom",
-      equals: ["list", "host", "lab"],
-    },
+    showIf: { field: "topic_freedom", equals: "imposed" },
     weights: W.F,
     sensitiveRisk: "low",
     sentToLLM: true,
@@ -178,7 +229,7 @@ export const topicQuestions: Question[] = [
     id: "deadline_range",
     block: 1,
     label: "Délai de rendu prévu",
-    help: "Horizon prévu jusqu’à la date de rendu (mémoire, thèse, article…).",
+    help: "Horizon jusqu’à la date de rendu. Avec le temps hebdomadaire, il sert à construire le planning de travail proposé.",
     type: "single",
     options: [
       { value: "lt3m", label: "Moins de 3 mois" },
@@ -198,10 +249,10 @@ export const topicQuestions: Question[] = [
     label: "Longueur attendue du manuscrit",
     type: "single",
     options: [
-      { value: "short", label: "Court (moins de 30 pages / article court)" },
-      { value: "medium", label: "Moyen (30–80 pages)" },
-      { value: "long", label: "Long (plus de 80 pages / thèse)" },
-      { value: "unknown", label: "Je ne sais pas encore" },
+      { value: "short", label: "Moins de 30 pages" },
+      { value: "medium", label: "30 à 80 pages" },
+      { value: "long", label: "Plus de 80 pages" },
+      { value: "unknown", label: "Je ne sais pas" },
     ],
     required: true,
     weights: W.F,
@@ -211,7 +262,8 @@ export const topicQuestions: Question[] = [
   {
     id: "weekly_time",
     block: 1,
-    label: "Temps hebdomadaire disponible",
+    label: "Temps à consacrer au sujet par semaine",
+    help: "Volume réaliste que vous pouvez y consacrer chaque semaine. Combiné au délai de rendu, il calibre le planning de travail proposé.",
     type: "single",
     options: [
       { value: "lt5", label: "Moins de 5 h" },
@@ -229,11 +281,11 @@ export const topicQuestions: Question[] = [
     block: 1,
     label: "Langue de rédaction",
     type: "single",
-    options: [
-      { value: "fr", label: "Français" },
+    options: withAutreLast([
       { value: "en", label: "Anglais" },
+      { value: "fr", label: "Français" },
       { value: "other", label: "Autre" },
-    ],
+    ]),
     required: true,
     weights: W.F,
     sensitiveRisk: "none",
@@ -257,12 +309,13 @@ export const topicQuestions: Question[] = [
     id: "disciplines_studied",
     block: 2,
     label: "Disciplines déjà étudiées et niveau",
-    help: "aucune = notions, 1 = une année, 2 = cursus complet, 3 = recherche avancée.",
+    help: "Indiquez le niveau atteint pour chaque discipline concernée.",
     type: "multi_scale",
     options: disciplines,
     required: false,
     min: 0,
     max: 3,
+    scaleLabels: ["Aucun (notion)", "Débutant", "Moyen", "Avancé"],
     allowSkip: skip,
     weights: W.MD,
     sensitiveRisk: "none",
@@ -310,15 +363,15 @@ export const topicQuestions: Question[] = [
     label: "Dans vos études ou travaux, quels aspects vous plaisent ?",
     help: "Ce que vous aimez faire ou mobiliser (pas vos goûts personnels hors recherche).",
     type: "multi",
-    options: [
-      { value: "theory", label: "Théorie" },
-      { value: "numbers", label: "Chiffres" },
-      { value: "field", label: "Terrain" },
-      { value: "debate", label: "Débats" },
-      { value: "history", label: "Histoire" },
+    options: withAutreLast([
       { value: "applied", label: "Application concrète" },
+      { value: "numbers", label: "Chiffres" },
+      { value: "debate", label: "Débats" },
       { value: "writing", label: "Écriture" },
-    ],
+      { value: "history", label: "Histoire" },
+      { value: "field", label: "Terrain" },
+      { value: "theory", label: "Théorie" },
+    ]),
     required: false,
     allowSkip: skip,
     weights: W.MD,
@@ -379,8 +432,8 @@ export const topicQuestions: Question[] = [
         options: [
           { value: "bachelor", label: "Mémoire licence" },
           { value: "master", label: "Mémoire master" },
-          { value: "report", label: "Rapport" },
           { value: "article", label: "Article" },
+          { value: "report", label: "Rapport" },
           { value: "other", label: "Autre" },
         ],
       },
@@ -441,12 +494,14 @@ export const topicQuestions: Question[] = [
   {
     id: "methods_skills",
     block: 3,
-    label: "Compétences méthodologiques (aucune = débutant, 3 = solide)",
+    label: "Compétences méthodologiques",
+    help: "Indiquez votre niveau pour chaque méthode : Aucun (notion), Débutant, Moyen ou Avancé.",
     type: "multi_scale",
     options: methodOptions,
     required: false,
     min: 0,
     max: 3,
+    scaleLabels: ["Aucun (notion)", "Débutant", "Moyen", "Avancé"],
     allowSkip: skip,
     weights: W.M,
     sensitiveRisk: "none",
@@ -457,17 +512,17 @@ export const topicQuestions: Question[] = [
     block: 3,
     label: "Logiciels déjà utilisés",
     type: "multi",
-    options: [
-      { value: "r", label: "R" },
-      { value: "python", label: "Python" },
-      { value: "spss", label: "SPSS" },
-      { value: "stata", label: "Stata" },
+    options: withAutreLast([
       { value: "excel", label: "Excel" },
       { value: "nvivo", label: "NVivo" },
-      { value: "zotero", label: "Zotero" },
+      { value: "python", label: "Python" },
       { value: "qgis", label: "QGIS" },
+      { value: "r", label: "R" },
+      { value: "spss", label: "SPSS" },
+      { value: "stata", label: "Stata" },
+      { value: "zotero", label: "Zotero" },
       { value: "other", label: "Autre" },
-    ],
+    ]),
     required: false,
     allowSkip: skip,
     weights: W.M,
@@ -477,13 +532,25 @@ export const topicQuestions: Question[] = [
   {
     id: "method_to_learn",
     block: 3,
-    label: "Méthodes que vous souhaitez apprendre",
+    label: "Méthodologie souhaitée",
     type: "multi",
     options: methodOptions,
     required: false,
     allowSkip: skip,
     weights: W.DA,
     sensitiveRisk: "none",
+    sentToLLM: true,
+  },
+  {
+    id: "method_to_learn_other",
+    block: 3,
+    label: "Précisez la méthodologie souhaitée",
+    type: "text_short",
+    required: false,
+    maxLength: 120,
+    showIf: { field: "method_to_learn", equals: "other" },
+    weights: W.DA,
+    sensitiveRisk: "low",
     sentToLLM: true,
   },
 ];

@@ -6,15 +6,42 @@ import {
   maskIdentifiers,
 } from "../../../../shared/privacy/sensitiveFilter";
 import { useConfirmDialog } from "./ConfirmDialog";
+import TopicSelect from "./TopicSelect";
+import TopicMultiSelect from "./TopicMultiSelect";
 
 type Props = {
   question: Question;
   value: unknown;
+  invalid?: boolean;
   onChange: (value: unknown) => void;
 };
 
-export default function QuestionField({ question, value, onChange }: Props) {
+function isFieldComplete(value: unknown): boolean {
+  if (value === SKIP_VALUE) return true;
+  if (value === undefined || value === null || value === "") return false;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return false;
+    if (typeof value[0] === "object") {
+      return value.some((row) =>
+        Object.values(row as Record<string, string>).some((v) =>
+          Boolean(String(v || "").trim()),
+        ),
+      );
+    }
+    return true;
+  }
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return String(value).trim().length > 0;
+}
+
+export default function QuestionField({
+  question,
+  value,
+  invalid = false,
+  onChange,
+}: Props) {
   const skipped = value === SKIP_VALUE;
+  const complete = !invalid && isFieldComplete(value);
   const textValue = typeof value === "string" && value !== SKIP_VALUE ? value : "";
   const sensitive =
     question.type === "text_short" && textValue
@@ -36,19 +63,50 @@ export default function QuestionField({ question, value, onChange }: Props) {
     );
   }
 
+  const fieldClass = [
+    "topic-field",
+    invalid ? "is-invalid" : "",
+    complete ? "is-complete" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <fieldset className="topic-field" data-risk={question.sensitiveRisk}>
+    <fieldset
+      id={"topic-field-" + question.id}
+      className={fieldClass}
+      data-risk={question.sensitiveRisk}
+      aria-invalid={invalid || undefined}
+    >
       <legend className="topic-sr-only">
         {question.label}
         {question.required ? " (obligatoire)" : ""}
       </legend>
       <div className="topic-field-head">
-        <h3 className="topic-field-title">
-          {question.label}
-          {question.required ? " *" : ""}
-        </h3>
+        <div className="topic-field-title-row">
+          <h3 className="topic-field-title">
+            {question.label}
+            {question.required ? (
+              <span className="topic-required-mark" aria-hidden="true">
+                {" "}
+                *
+              </span>
+            ) : null}
+          </h3>
+          {complete ? (
+            <span className="topic-field-done">
+              <i className="fa-solid fa-check" aria-hidden="true" />
+              {skipped ? "Passé" : "Renseigné"}
+            </span>
+          ) : null}
+        </div>
         {question.help ? (
           <p className="topic-field-sub">{question.help}</p>
+        ) : null}
+        {invalid ? (
+          <p className="topic-field-error" role="alert">
+            Ce champ obligatoire doit être renseigné.
+          </p>
         ) : null}
       </div>
 
@@ -70,53 +128,44 @@ export default function QuestionField({ question, value, onChange }: Props) {
         aria-hidden={skipped}
       >
         {question.type === "single" && (
-          <div className="topic-options">
-            {(question.options || []).map((opt) => (
-              <label key={opt.value} className="topic-option">
-                <input
-                  type="radio"
-                  name={question.id}
-                  value={opt.value}
-                  checked={value === opt.value}
-                  onChange={() => onChange(opt.value)}
-                  tabIndex={skipped ? -1 : undefined}
-                />
-                <span>{opt.label}</span>
-              </label>
-            ))}
-          </div>
+          <TopicSelect
+            aria-label={question.label}
+            value={
+              typeof value === "string" && value
+                ? value
+                : question.id === "writing_language"
+                  ? "fr"
+                  : ""
+            }
+            tabIndex={skipped ? -1 : undefined}
+            onChange={(next) =>
+              onChange(
+                next || (question.id === "writing_language" ? "fr" : next),
+              )
+            }
+            allowEmpty={question.id !== "writing_language"}
+            groups={question.optionGroups}
+            options={
+              question.optionGroups?.length ? undefined : question.options
+            }
+          />
         )}
 
         {question.type === "multi" && (
-          <div className="topic-options">
-            {(question.options || []).map((opt) => {
-              const arr = Array.isArray(value) ? (value as string[]) : [];
-              const checked = arr.includes(opt.value);
-              return (
-                <label key={opt.value} className="topic-option">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    tabIndex={skipped ? -1 : undefined}
-                    onChange={() =>
-                      onChange(
-                        checked
-                          ? arr.filter((v) => v !== opt.value)
-                          : [...arr, opt.value],
-                      )
-                    }
-                  />
-                  <span>{opt.label}</span>
-                </label>
-              );
-            })}
-          </div>
+          <TopicMultiSelect
+            aria-label={question.label}
+            value={Array.isArray(value) ? (value as string[]) : []}
+            tabIndex={skipped ? -1 : undefined}
+            onChange={onChange}
+            options={question.options || []}
+            placeholder="Sélectionner…"
+          />
         )}
 
         {question.type === "text_short" && (
           <div className="topic-text-block">
             <textarea
-              rows={3}
+              rows={2}
               maxLength={question.maxLength ?? 300}
               value={textValue}
               onChange={(e) => setText(e.target.value)}
@@ -153,32 +202,33 @@ export default function QuestionField({ question, value, onChange }: Props) {
                   ? (value as Record<string, number>)
                   : {};
               const current = map[opt.value];
+              const min = question.min ?? 0;
+              const max = question.max ?? 3;
               return (
                 <label key={opt.value} className="topic-scale-row">
                   <span>{opt.label}</span>
-                  <select
+                  <TopicSelect
+                    compact
+                    aria-label={"Niveau — " + opt.label}
+                    placeholder="Niveau…"
                     value={current === undefined ? "" : String(current)}
                     tabIndex={skipped ? -1 : undefined}
-                    onChange={(e) => {
+                    onChange={(raw) => {
                       const next = { ...map };
-                      if (e.target.value === "") delete next[opt.value];
-                      else next[opt.value] = Number(e.target.value);
+                      if (raw === "") delete next[opt.value];
+                      else next[opt.value] = Number(raw);
                       onChange(next);
                     }}
-                  >
-                    <option value="">Choisir</option>
-                    {Array.from(
-                      {
-                        length:
-                          (question.max ?? 3) - (question.min ?? 0) + 1,
-                      },
-                      (_, i) => (question.min ?? 0) + i,
-                    ).map((n) => (
-                      <option key={n} value={n}>
-                        {n === 0 ? "aucune" : n}
-                      </option>
-                    ))}
-                  </select>
+                    options={Array.from(
+                      { length: max - min + 1 },
+                      (_, i) => min + i,
+                    ).map((n) => ({
+                      value: String(n),
+                      label:
+                        question.scaleLabels?.[n - min] ??
+                        (n === 0 ? "Aucun" : String(n)),
+                    }))}
+                  />
                 </label>
               );
             })}
@@ -260,17 +310,13 @@ function RepeatableGroup({
             f.type === "single" ? (
               <label key={f.id}>
                 {f.label}
-                <select
+                <TopicSelect
+                  compact
+                  placeholder="Choisir"
                   value={row[f.id] || ""}
-                  onChange={(e) => update(index, f.id, e.target.value)}
-                >
-                  <option value="">Choisir</option>
-                  {(f.options || []).map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(next) => update(index, f.id, next)}
+                  options={f.options}
+                />
               </label>
             ) : (
               <label key={f.id}>

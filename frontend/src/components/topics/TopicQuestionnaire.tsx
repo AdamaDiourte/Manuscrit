@@ -1,9 +1,12 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   TOPIC_BLOCKS,
   topicQuestions,
 } from "../../../../shared/research/topicQuestions";
-import { isQuestionVisible } from "../../../../shared/research/topicTypes";
+import {
+  isQuestionVisible,
+  SKIP_VALUE,
+} from "../../../../shared/research/topicTypes";
 import QuestionField from "./QuestionField";
 import AnimatedReveal from "./AnimatedReveal";
 
@@ -32,6 +35,14 @@ const OTHER_VALUE: Record<string, string> = {
 
 const EXIT_MS = 280;
 
+function isAnswerEmpty(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return true;
+  if (value === SKIP_VALUE) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
 export default function TopicQuestionnaire({
   step,
   answers,
@@ -48,10 +59,15 @@ export default function TopicQuestionnaire({
   const visibleQuestions = blockQuestions.filter((q) =>
     isQuestionVisible(q, answers),
   );
+  const [missingIds, setMissingIds] = useState<string[]>([]);
   const answersRef = useRef(answers);
   useEffect(() => {
     answersRef.current = answers;
   }, [answers]);
+
+  useEffect(() => {
+    setMissingIds([]);
+  }, [step]);
 
   function setAnswer(id: string, value: unknown) {
     const next = { ...answers, [id]: value };
@@ -59,8 +75,10 @@ export default function TopicQuestionnaire({
     const clearingOther =
       !!otherId && value !== OTHER_VALUE[id] && answers[otherId] !== undefined;
 
-    // Keep linked "précisez" value during exit animation, then clear it.
     onAnswers(next);
+    if (!isAnswerEmpty(value)) {
+      setMissingIds((ids) => ids.filter((x) => x !== id));
+    }
     if (clearingOther && otherId) {
       window.setTimeout(() => {
         const current = { ...answersRef.current };
@@ -72,25 +90,31 @@ export default function TopicQuestionnaire({
     }
   }
 
-  function validateBlock1(): string | null {
-    if (block.id !== 1) return null;
-    for (const q of visibleQuestions) {
-      if (!q.required) continue;
-      const v = answers[q.id];
-      if (v === undefined || v === null || v === "")
-        return "Complétez les champs obligatoires du cadre du projet.";
-    }
-    return null;
+  function missingRequiredIds(): string[] {
+    return visibleQuestions
+      .filter((q) => q.required && isAnswerEmpty(answers[q.id]))
+      .map((q) => q.id);
   }
 
   function next() {
-    const err = validateBlock1();
-    if (err) {
-      alert(err);
+    const missing = missingRequiredIds();
+    if (missing.length) {
+      setMissingIds(missing);
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById("topic-field-" + missing[0])
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
       return;
     }
+    setMissingIds([]);
     if (step < total) onStep(step + 1);
     else onReview();
+  }
+
+  function goStep(n: number) {
+    setMissingIds([]);
+    onStep(n);
   }
 
   return (
@@ -105,7 +129,7 @@ export default function TopicQuestionnaire({
         </p>
       </div>
 
-      <header className="topic-section-head">
+      <div className="topic-section-head">
         <h2>{block.title}</h2>
         <p
           className={
@@ -118,7 +142,14 @@ export default function TopicQuestionnaire({
             ? "Bloc obligatoire pour proposer des sujets réalistes."
             : "Facultatif : vous pouvez passer ou répondre partiellement."}
         </p>
-      </header>
+      </div>
+
+      {missingIds.length > 0 && (
+        <p className="topic-form-error" role="alert">
+          Complétez les champs obligatoires indiqués en rouge
+          {missingIds.length > 1 ? ` (${missingIds.length})` : ""}.
+        </p>
+      )}
 
       <form
         className="topic-form"
@@ -126,6 +157,7 @@ export default function TopicQuestionnaire({
           e.preventDefault();
           next();
         }}
+        noValidate
       >
         {blockQuestions.map((q) => {
           const show = isQuestionVisible(q, answers);
@@ -134,6 +166,7 @@ export default function TopicQuestionnaire({
               <QuestionField
                 question={q}
                 value={answers[q.id]}
+                invalid={missingIds.includes(q.id)}
                 onChange={(v) => setAnswer(q.id, v)}
               />
             </AnimatedReveal>
@@ -156,7 +189,7 @@ export default function TopicQuestionnaire({
               <button
                 type="button"
                 className="secondary"
-                onClick={() => onStep(step - 1)}
+                onClick={() => goStep(step - 1)}
                 disabled={busy}
               >
                 Précédent

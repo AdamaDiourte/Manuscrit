@@ -19,6 +19,8 @@ type Props = {
   onClear: () => void;
   busy: boolean;
   error: string;
+  simulate: boolean;
+  onSimulate: (value: boolean) => void;
 };
 
 export default function TopicReview({
@@ -29,6 +31,8 @@ export default function TopicReview({
   onClear,
   busy,
   error,
+  simulate,
+  onSimulate,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const { confirm, dialog } = useConfirmDialog();
@@ -155,6 +159,22 @@ export default function TopicReview({
 
       {error && <p role="alert">{error}</p>}
 
+      <label className="topic-simulate">
+        <input
+          type="checkbox"
+          checked={simulate}
+          disabled={busy}
+          onChange={(e) => onSimulate(e.target.checked)}
+        />
+        <span>
+          Mode simulation (sans IA)
+          <small>
+            Génère trois sujets d’exemple et des documents Word téléchargeables
+            pour tester l’interface.
+          </small>
+        </span>
+      </label>
+
       <div className="topic-nav">
         <button
           type="button"
@@ -179,7 +199,11 @@ export default function TopicReview({
             onClick={onGenerate}
             disabled={busy}
           >
-            {busy ? "Validation…" : "Valider"}
+            {busy
+              ? "Analyse…"
+              : simulate
+                ? "Simuler trois sujets"
+                : "Valider et analyser"}
           </button>
         </div>
       </div>

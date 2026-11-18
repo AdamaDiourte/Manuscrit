@@ -20,7 +20,7 @@ app.use("/api",(req,res,next)=>{
   next();
 });
 // Bodies are parsed as raw buffers for Fetch adapters — never logged.
-app.use(["/api/research","/api/billing","/api/topics"],express.raw({type:()=>true,limit:"64kb"}));
+app.use(["/api/research","/api/billing","/api/topics"],express.raw({type:()=>true,limit:"256kb"}));
 app.get("/api/workspace",adapter(workspace.GET,origin));
 app.post("/api/workspace",adapter(workspace.POST,origin));
 app.post("/api/research",adapter(research.POST,origin));
@@ -29,6 +29,7 @@ app.post("/api/billing",adapter(billing.POST,origin));
 app.post("/api/topics/draft",adapter(topics.POST_draft,origin));
 app.post("/api/topics/generate",adapter(topics.POST_generate,origin));
 app.post("/api/topics/regenerate",adapter(topics.POST_regenerate,origin));
+app.post("/api/topics/document",adapter(topics.POST_document,origin));
 app.use("/api",(_req,res)=>{res.sendStatus(404)});
 const assets=resolve(dirname(fileURLToPath(import.meta.url)),"../../frontend/dist");
 app.use(express.static(assets));

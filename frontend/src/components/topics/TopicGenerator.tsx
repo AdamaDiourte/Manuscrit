@@ -10,7 +10,7 @@ import { detectSensitiveTerms } from "../../../../shared/privacy/sensitiveFilter
 import TopicNotice from "./TopicNotice";
 import TopicQuestionnaire from "./TopicQuestionnaire";
 import TopicReview from "./TopicReview";
-import TopicResults from "./TopicResults";
+import TopicResults, { type DocFile } from "./TopicResults";
 import { useConfirmDialog } from "./ConfirmDialog";
 import {
   clearDraft,
@@ -23,18 +23,35 @@ type Phase = "notice" | "quiz" | "review" | "results";
 
 type Props = {
   goPrivacy: () => void;
-  onChooseTopic?: (topic: GeneratedTopic) => void;
+  onTopicsGenerated?: (payload: {
+    sessionId: string;
+    topics: GeneratedTopic[];
+    answers: Record<string, unknown>;
+    model?: string;
+    simulated?: boolean;
+  }) => void | Promise<void>;
+  onChooseTopic?: (
+    topic: GeneratedTopic,
+    docs: DocFile[],
+    sessionId: string,
+  ) => void | Promise<void>;
 };
 
-export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
+export default function TopicGenerator({
+  goPrivacy,
+  onTopicsGenerated,
+  onChooseTopic,
+}: Props) {
   const saved = useMemo(() => loadDraft(), []);
   const [phase, setPhase] = useState<Phase>(
     saved?.consents?.noticeAccepted?.value ? "quiz" : "notice",
   );
   const [step, setStep] = useState(saved?.step || 1);
-  const [answers, setAnswers] = useState<Record<string, unknown>>(
-    saved?.answers || {},
-  );
+  const [answers, setAnswers] = useState<Record<string, unknown>>(() => {
+    const base = { ...(saved?.answers || {}) };
+    if (!base.writing_language) base.writing_language = "fr";
+    return base;
+  });
   const [flags, setFlags] = useState({
     ageOver15: saved?.consents?.ageOver15?.value ?? false,
     noticeAccepted: saved?.consents?.noticeAccepted?.value ?? false,
@@ -47,7 +64,17 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
   const [ticket, setTicket] = useState("");
   const [regens, setRegens] = useState(0);
   const [model, setModel] = useState("");
+  const [simulate, setSimulate] = useState(true);
+  const [simulated, setSimulated] = useState(false);
+  const [sessionId, setSessionId] = useState("");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+
+  useEffect(() => {
+    if (answers.writing_language) return;
+    setAnswers((a) =>
+      a.writing_language ? a : { ...a, writing_language: "fr" },
+    );
+  }, [answers.writing_language]);
 
   useEffect(() => {
     if (phase === "results") return;
@@ -64,6 +91,13 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
       },
     });
   }, [answers, step, flags, phase]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    document
+      .querySelector(".topic-flow, .topic-phase, .cp-flow")
+      ?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [phase, step]);
 
   function buildConsents(): TopicConsents {
     return {
@@ -97,16 +131,33 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
       const res = await fetch("/api/topics/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answers, consents: buildConsents() }),
+        body: JSON.stringify({
+          answers,
+          consents: buildConsents(),
+          simulate,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Génération impossible.");
-      setTopics(data.topics);
+      const nextTopics = data.topics as GeneratedTopic[];
+      const sid =
+        sessionId ||
+        "arch-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+      setSessionId(sid);
+      setTopics(nextTopics);
       setTicket(data.ticket);
       setRegens(data.regenerationsRemaining ?? 0);
       setModel(data.model || "");
+      setSimulated(Boolean(data.simulated || simulate));
       clearDraft();
       setPhase("results");
+      await onTopicsGenerated?.({
+        sessionId: sid,
+        topics: nextTopics,
+        answers,
+        model: data.model || "",
+        simulated: Boolean(data.simulated || simulate),
+      });
     } catch (e: any) {
       setError(e.message || "Génération impossible.");
     } finally {
@@ -127,14 +178,26 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
           reason,
           answers,
           consents: buildConsents(),
+          simulate,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Régénération impossible.");
-      setTopics(data.topics);
+      const nextTopics = data.topics as GeneratedTopic[];
+      setTopics(nextTopics);
       setTicket(data.ticket);
       setRegens(data.regenerationsRemaining ?? 0);
       setModel(data.model || "");
+      setSimulated(Boolean(data.simulated || simulate));
+      if (sessionId) {
+        await onTopicsGenerated?.({
+          sessionId,
+          topics: nextTopics,
+          answers,
+          model: data.model || "",
+          simulated: Boolean(data.simulated || simulate),
+        });
+      }
     } catch (e: any) {
       setError(e.message || "Régénération impossible.");
     } finally {
@@ -152,11 +215,12 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
     });
     if (!ok) return;
     clearDraft();
-    setAnswers({});
+    setAnswers({ writing_language: "fr" });
     setStep(1);
     setTopics([]);
     setTicket("");
     setRegens(0);
+    setSimulated(false);
     setError("");
     setPhase("notice");
     setFlags({
@@ -172,7 +236,8 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
     setTopics([]);
     setTicket("");
     setRegens(0);
-    setAnswers({});
+    setSimulated(false);
+    setAnswers({ writing_language: "fr" });
     setStep(1);
     setPhase("notice");
     setFlags({
@@ -209,6 +274,8 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
         onClear={clearAll}
         busy={busy}
         error={error}
+        simulate={simulate}
+        onSimulate={setSimulate}
       />
     );
   else if (phase === "results")
@@ -218,15 +285,20 @@ export default function TopicGenerator({ goPrivacy, onChooseTopic }: Props) {
         topics={topics}
         regenerationsRemaining={regens}
         model={model}
+        simulated={simulated}
+        answers={answers}
+        consents={buildConsents()}
         busy={busy}
         error={error}
         onRegenerate={regenerate}
         onRestart={restart}
+        onBusy={setBusy}
+        onError={setError}
         onChooseTopic={
           onChooseTopic
-            ? (topic) => {
+            ? async (topic, docs) => {
                 clearDraft();
-                onChooseTopic(topic);
+                await onChooseTopic(topic, docs, sessionId);
               }
             : undefined
         }

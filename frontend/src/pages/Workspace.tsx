@@ -36,6 +36,7 @@ import { templates, types, makeProject, demo } from "../data/projectTemplates";
 import ResearchStudio, {
   type ResearchPage,
 } from "../components/copilot/ResearchStudio";
+import { mergeTopicArchives } from "../components/topics/topicArchive";
 import LegalPage, {
   isLegalPage,
   legalPages,
@@ -44,7 +45,6 @@ const researchPages: ResearchPage[] = [
   "Accueil",
   "Construire mon projet",
   "Organiser mon manuscrit",
-  "Continuer un projet",
 ];
 const isResearchPage = (v: string): v is ResearchPage =>
   researchPages.includes(v as ResearchPage);
@@ -92,7 +92,9 @@ export default function Page() {
     [loadErr, L] = useState(false);
   const [attested, attest] = useState(false);
   const rev = useRef(""),
-    lock = useRef(false);
+    lock = useRef(false),
+    dataRef = useRef(data);
+  dataRef.current = data;
   const p = data.projects.find((x: any) => x.id === pid) || data.projects[0],
     cs = p.chapters,
     pct = Math.round(
@@ -172,13 +174,27 @@ export default function Page() {
     setData(next);
   }
   async function saveDraft(draft: any) {
-    if (!ready || lock.current)
-      throw Error("Chargement ou sauvegarde en cours.");
+    if (!ready) throw Error("Chargement ou sauvegarde en cours.");
+    for (let i = 0; i < 12 && lock.current; i++) {
+      await new Promise((r) => setTimeout(r, 40 + i * 20));
+    }
+    if (lock.current) throw Error("Chargement ou sauvegarde en cours.");
     lock.current = true;
     try {
-      const next = structuredClone(data);
+      const next = structuredClone(dataRef.current);
       const q = next.projects.find((x: any) => x.id === p.id);
-      q.copilot = { ...draft, attestedAt: new Date().toISOString() };
+      if (!q) throw Error("Projet introuvable.");
+      const previous = q.copilot || {};
+      const topicArchive = mergeTopicArchives(
+        previous.topicArchive,
+        draft.topicArchive,
+      );
+      q.copilot = {
+        ...previous,
+        ...draft,
+        topicArchive,
+        attestedAt: new Date().toISOString(),
+      };
       await commit(next);
     } finally {
       lock.current = false;
@@ -533,17 +549,11 @@ export default function Page() {
               key={view + p.id + String(ready)}
               page={view}
               p={p}
-              projects={data.projects}
               ready={ready}
               save={saveDraft}
               add={newMaterial}
               open={(m) => edit("material", m)}
-              project={() => project()}
               go={(page) => go(page)}
-              continueProject={(id) => {
-                setPid(id);
-                go("Tableau de bord");
-              }}
             />
           ) : isLegalPage(view) ? (
             <LegalPage page={view} />

@@ -8,6 +8,12 @@ export type Condition = {
 
 export type QuestionOption = { value: string; label: string };
 
+/** Optional visual grouping for single/multi choice lists (stacked sections). */
+export type QuestionOptionGroup = {
+  label: string;
+  options: QuestionOption[];
+};
+
 export type QuestionType =
   | "single"
   | "multi"
@@ -24,6 +30,8 @@ export type Question = {
   help?: string;
   type: QuestionType;
   options?: QuestionOption[];
+  /** When set, render options in stacked labeled groups (still mirrored in `options`). */
+  optionGroups?: QuestionOptionGroup[];
   /** Sub-fields for repeatable_group */
   fields?: {
     id: string;
@@ -36,6 +44,11 @@ export type Question = {
   maxLength?: number;
   min?: number;
   max?: number;
+  /**
+   * Human-readable labels for multi_scale values from min to max (inclusive).
+   * Index 0 corresponds to `min`. Prefer words over bare numbers for the LLM.
+   */
+  scaleLabels?: string[];
   showIf?: Condition;
   weights: AxisWeight;
   sensitiveRisk: "none" | "low" | "medium";
@@ -62,6 +75,8 @@ export type TopicAxis = "mastery" | "ambition" | "discovery";
 export type GeneratedTopic = {
   axis: TopicAxis;
   title: string;
+  /** Brève mise en contexte (actualité, histoire, débat…) avant la question. */
+  context: string;
   research_question: string;
   hypotheses: string[];
   field_or_corpus: string;
@@ -90,6 +105,31 @@ export const REGEN_REASON_LABELS: Record<RegenReason, string> = {
   too_ambitious: "Trop ambitieux",
   too_banal: "Trop banal",
   already_done: "Sujet déjà traité",
+};
+
+export type { DocumentKind } from "./documentStructures";
+import type { DocumentKind as DocKind } from "./documentStructures";
+
+export type DocumentTable = {
+  headers: string[];
+  rows: string[][];
+};
+
+export type DocumentSection = {
+  id: string;
+  heading: string;
+  paragraphs: string[];
+  bullets?: string[];
+  /** Tableau de route (surtout pour le plan de travail). */
+  table?: DocumentTable;
+};
+
+export type TopicDocument = {
+  kind: DocKind;
+  projectType: string;
+  title: string;
+  subtitle?: string;
+  sections: DocumentSection[];
 };
 
 export const SKIP_VALUE = "__skip__";
