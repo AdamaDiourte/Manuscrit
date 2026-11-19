@@ -32,11 +32,22 @@ import {
   Bookmark,
   Home,
 } from "lucide-react";
-import { templates, types, makeProject, demo } from "../data/projectTemplates";
+import {
+  templates,
+  TOOL_TYPE_OPTIONS,
+  DATA_TYPE_OPTIONS,
+  isNoTool,
+  makeProject,
+  demo,
+  PROJECT_MODEL_OPTIONS,
+  projectTypeLabel,
+} from "../data/projectTemplates";
 import ResearchStudio, {
+  keepCorpusStartFlow,
   type ResearchPage,
 } from "../components/copilot/ResearchStudio";
 import { mergeTopicArchives } from "../components/topics/topicArchive";
+import TopicSelect from "../components/topics/TopicSelect";
 import LegalPage, {
   isLegalPage,
   legalPages,
@@ -89,6 +100,7 @@ export default function Page() {
     [search, S] = useState(""),
     [filter, K] = useState<any>({}),
     [file, H] = useState<File | null>(null),
+    [toolFile, setToolFile] = useState<File | null>(null),
     [loadErr, L] = useState(false);
   const [attested, attest] = useState(false);
   const rev = useRef(""),
@@ -103,23 +115,63 @@ export default function Page() {
     pending = p.tasks.filter((x: any) => x.status !== "Résolu"),
     dates = [...p.dates].sort((a, b) => a.date.localeCompare(b.date)),
     chap = (id: string) => cs.find((c: any) => c.id === id)?.title || "Projet";
-  async function load() {
+  const materialSaveReady = (() => {
+    if (modal !== "material") return true;
+    if (!(form.title || "").trim()) return false;
+    if (!(form.toolType || "").trim()) return false;
+    if (!(form.type || "").trim()) return false;
+    const toolOk =
+      isNoTool(form.toolType) ||
+      form.toolUnavailable ||
+      Boolean(toolFile || form.toolFile);
+    if (!toolOk) return false;
+    if (!file && !form.file) return false;
+    if (!attested) return false;
+    return true;
+  })();
+  const formSaveReady =
+    modal === "material"
+      ? materialSaveReady
+      : modal === "project"
+        ? Boolean(
+            (form.title || "").trim() &&
+              form.type &&
+              (form.type !== "Autre" || (form.typeOther || "").trim()),
+          )
+        : Boolean((form.title || "").trim());
+  async function attemptLoad(): Promise<boolean> {
     try {
       const r = await fetch("/api/workspace", { cache: "no-store" });
-      if (!r.ok) throw 1;
+      if (!r.ok) return false;
       const a = (await r.json()) as any;
       rev.current = a.rev;
       if (a.data) setData(a.data);
       R(true);
       L(false);
+      return true;
     } catch {
-      L(true);
+      return false;
     }
   }
+  /** GET workspace avec 3 retries (1s, 2s, 4s) avant alerte. */
+  async function load(signal?: { cancelled: boolean }) {
+    L(false);
+    if (await attemptLoad()) return;
+    for (const delay of [1000, 2000, 4000]) {
+      await new Promise((r) => setTimeout(r, delay));
+      if (signal?.cancelled) return;
+      if (await attemptLoad()) return;
+    }
+    if (!signal?.cancelled) L(true);
+  }
   useEffect(() => {
-    load();
+    const signal = { cancelled: false };
+    void load(signal);
     if (new URLSearchParams(location.search).get("billing") === "return")
       V("Abonnement");
+    return () => {
+      signal.cancelled = true;
+    };
   }, []);
   useEffect(() => {
     const f = (e: KeyboardEvent) => {
@@ -143,18 +195,76 @@ export default function Page() {
     E("");
     attest(false);
     H(null);
+    setToolFile(null);
     F(structuredClone(f));
     M(m);
     O(false);
   }
   const val = (key: string, v: any) => F((f: any) => ({ ...f, [key]: v }));
   function newMaterial() {
-    edit("material", { type: "Note", status: "À classer", extra: {} });
+    edit("material", {
+      id: crypto.randomUUID(),
+      toolType: "Grille d’entretien",
+      type: "Entretien réalisé",
+      observation: "",
+      toolUnavailable: false,
+      extra: {},
+    });
+  }
+  async function uploadAttachedFile(selected: File) {
+    if (selected.size > 20 * 1024 * 1024)
+      throw Error("Le fichier dépasse 20 Mo.");
+    let extracted = "";
+    if (/\.(txt|md|csv|tsv|pdf|docx|xlsx)$/i.test(selected.name)) {
+      const { extractText } = await import("../services/import/extractText");
+      try {
+        extracted = await extractText(selected);
+      } catch {
+        extracted = "";
+      }
+    }
+    const r = await fetch(
+      "/api/workspace?upload=1&name=" + encodeURIComponent(selected.name),
+      {
+        method: "POST",
+        headers: { "X-Deposit-Attested": "yes" },
+        body: selected,
+      },
+    );
+    if (!r.ok) throw Error("Le dépôt du fichier a échoué.");
+    return {
+      id: ((await r.json()) as { id: string }).id,
+      filename: selected.name,
+      extracted,
+    };
   }
   function project(type = "Mémoire") {
     edit("project", { type });
   }
+  async function deleteProject(projectId: string) {
+    if (lock.current) throw Error("Chargement ou sauvegarde en cours.");
+    const target = dataRef.current.projects.find((x: any) => x.id === projectId);
+    if (!target) throw Error("Projet introuvable.");
+    if (target.demo) throw Error("Le projet d’exemple ne peut pas être supprimé.");
+    lock.current = true;
+    try {
+      const next = structuredClone(dataRef.current);
+      next.projects = next.projects.filter((x: any) => x.id !== projectId);
+      if (!next.projects.length) next.projects = [demo];
+      await commit(next);
+      if (pid === projectId) {
+        const fallback =
+          next.projects.find((x: any) => !x.demo)?.id || next.projects[0].id;
+        setPid(fallback);
+      }
+    } finally {
+      lock.current = false;
+    }
+  }
   async function commit(next: any) {
+    // Garde-fou : jamais POST defaultData / état local tant que le GET n’a pas réussi.
+    if (!ready)
+      throw Error("Le chargement doit être terminé avant l’enregistrement.");
     const r = await fetch("/api/workspace", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -216,7 +326,14 @@ export default function Page() {
         throw Error("Renseignez un intitulé.");
       let newId = "";
       if (modal === "project") {
-        const n = makeProject(a.title.trim(), a.person.trim(), a.type);
+        if (!a.type) throw Error("Choisissez un type de projet.");
+        if (a.type === "Autre" && !String(a.typeOther || "").trim())
+          throw Error("Précisez le type de projet (catégorie Autre).");
+        const n = makeProject(
+          a.title.trim(),
+          a.type,
+          String(a.typeOther || ""),
+        );
         next.projects.push(n);
         newId = n.id;
       } else {
@@ -231,37 +348,66 @@ export default function Page() {
         )[modal];
         if (modal === "material") {
           if (!attested) throw Error("Confirmez les conditions de dépôt.");
+          if (!(a.toolType || "").trim())
+            throw Error("Indiquez l’outil de recueil.");
+          if (!(a.type || "").trim())
+            throw Error("Indiquez le type de données recueillies.");
           a.attestedAt = new Date().toISOString();
-        }
-        if (file) {
-          if (file.size > 20 * 1024 * 1024)
-            throw Error("Le fichier dépasse 20 Mo.");
-          if (/\.(txt|md|csv|tsv|pdf|docx|xlsx)$/i.test(file.name)) {
-            const { extractText } = await import("../services/import/extractText");
-            try {
-              a.extracted = await extractText(file);
-            } catch (ex) {
-              if (!a.text?.trim()) throw ex;
-              a.extracted = "";
-            }
-          } else {
-            a.extracted = "";
-            if (!a.text?.trim())
-              throw Error(
-                "Décrivez ce document ou ajoutez une transcription dans Notes et contenu.",
-              );
+          const hasToolFile = Boolean(toolFile || a.toolFile);
+          const hasDataFile = Boolean(file || a.file);
+          const skipToolFile = a.toolUnavailable || isNoTool(a.toolType);
+          if (skipToolFile) {
+            a.toolFile = "";
+            a.toolFilename = "";
+            a.toolExtracted = "";
+            if (isNoTool(a.toolType)) a.toolUnavailable = false;
+            setToolFile(null);
+          } else if (!hasToolFile) {
+            throw Error(
+              "Joignez le fichier de l’outil, ou déclarez l’outil indisponible.",
+            );
           }
-          const r = await fetch(
-            "/api/workspace?upload=1&name=" + encodeURIComponent(file.name),
-            {
-              method: "POST",
-              headers: { "X-Deposit-Attested": "yes" },
-              body: file,
-            },
-          );
-          if (!r.ok) throw Error("Le dépôt du fichier a échoué.");
-          a.file = ((await r.json()) as { id: string }).id;
-          a.filename = file.name;
+          if (!hasDataFile) {
+            throw Error(
+              "Joignez le fichier des données recueillies (obligatoire).",
+            );
+          }
+          if (toolFile && !skipToolFile) {
+            const up = await uploadAttachedFile(toolFile);
+            if (
+              !up.extracted &&
+              /\.(png|jpe?g|webp|gif)$/i.test(toolFile.name) &&
+              !a.observation?.trim()
+            ) {
+              throw Error(
+                "Ajoutez une observation pour l’outil image ou scan.",
+              );
+            }
+            a.toolFile = up.id;
+            a.toolFilename = up.filename;
+            a.toolExtracted = up.extracted;
+          }
+          if (file) {
+            const up = await uploadAttachedFile(file);
+            if (
+              !up.extracted &&
+              /\.(png|jpe?g|webp|gif)$/i.test(file.name) &&
+              !a.observation?.trim() &&
+              !a.text?.trim()
+            ) {
+              throw Error(
+                "Ajoutez une observation pour les données image ou scan.",
+              );
+            }
+            a.file = up.id;
+            a.filename = up.filename;
+            a.extracted = up.extracted;
+          }
+        } else if (file) {
+          const up = await uploadAttachedFile(file);
+          a.file = up.id;
+          a.filename = up.filename;
+          a.extracted = up.extracted;
         }
         if (!a.id) a.id = crypto.randomUUID();
         const i = q[key].findIndex((x: any) => x.id === a.id);
@@ -281,8 +427,10 @@ export default function Page() {
       await commit(next);
       M("");
       if (newId) {
+        if (view === "Organiser mon manuscrit") keepCorpusStartFlow();
         setPid(newId);
-        go("Accueil");
+        // Depuis « Organiser mon manuscrit », rester dans le parcours (pas la page Démarrer).
+        if (!isResearchPage(view)) go("Accueil");
       }
     } catch (ex: any) {
       E(ex.message || "Enregistrement impossible.");
@@ -297,6 +445,7 @@ export default function Page() {
     options?: string[],
     required = false,
     type = "text",
+    placeholder = "",
   ) {
     return (
       <label>
@@ -317,6 +466,7 @@ export default function Page() {
             value={form[key] || ""}
             onChange={(e) => val(key, e.target.value)}
             rows={4}
+            placeholder={placeholder || undefined}
           />
         ) : (
           <input
@@ -324,6 +474,7 @@ export default function Page() {
             type={type}
             value={form[key] || ""}
             onChange={(e) => val(key, e.target.value)}
+            placeholder={placeholder || undefined}
           />
         )}
       </label>
@@ -517,7 +668,20 @@ export default function Page() {
           </button>
         </header>
         <div className="wrap">
-          {!isResearchPage(view) && (
+          {!ready && !loadErr && (
+            <p role="status" className="workspace-load-status">
+              Chargement de l’espace…
+            </p>
+          )}
+          {loadErr && !ready && (
+            <p role="alert" className="workspace-load-alert">
+              Chargement du projet impossible.{" "}
+              <button type="button" onClick={() => void load()}>
+                Réessayer
+              </button>
+            </p>
+          )}
+          {ready && !isResearchPage(view) && (
             <div className="pagehead">
               <div>
                 <h1>{view}</h1>
@@ -538,21 +702,78 @@ export default function Page() {
               )}
             </div>
           )}
-          {loadErr && (
-            <p role="alert">
-              Chargement du projet impossible.{" "}
-              <button onClick={load}>Réessayer</button>
-            </p>
-          )}
-          {isResearchPage(view) ? (
+          {ready &&
+            (isResearchPage(view) ? (
             <ResearchStudio
               key={view + p.id + String(ready)}
               page={view}
               p={p}
+              projects={data.projects.map((x: any) => {
+                const draft = x.copilot || {};
+                const plan = draft.corpusResult;
+                return {
+                  id: x.id,
+                  title: x.title,
+                  type: x.type,
+                  typeOther: x.typeOther,
+                  demo: x.demo,
+                  materials: (x.materials || []).map((m: any) => ({
+                    id: m.id,
+                    title: m.title,
+                    type: m.type,
+                    hasText: Boolean(
+                      [m.observation, m.text, m.extracted, m.toolExtracted]
+                        .filter(Boolean)
+                        .join("")
+                        .trim(),
+                    ),
+                  })),
+                  frame: {
+                    documentType: draft.documentType,
+                    documentTypeOther: draft.documentTypeOther,
+                    discipline: draft.discipline,
+                    disciplineOther: draft.disciplineOther,
+                    expectedLength: draft.expectedLength,
+                    writingTime: draft.writingTime,
+                    startDate: draft.startDate,
+                    brief: draft.brief,
+                  },
+                  dates: (x.dates || []).map((d: any) => ({
+                    id: d.id,
+                    title: d.title,
+                    date: d.date,
+                  })),
+                  plan: plan
+                    ? {
+                        date: plan.date,
+                        simulated: Boolean(plan.simulated),
+                        model: plan.model,
+                        sections: Array.isArray(plan.sections)
+                          ? plan.sections.length
+                          : 0,
+                        data: plan,
+                      }
+                    : null,
+                };
+              })}
               ready={ready}
               save={saveDraft}
               add={newMaterial}
               open={(m) => edit("material", m)}
+              createProject={() => project()}
+              deleteProject={deleteProject}
+              selectProject={(id) => {
+                if (view === "Organiser mon manuscrit") {
+                  try {
+                    if (!sessionStorage.getItem("manuscrit-research-resume")) {
+                      keepCorpusStartFlow();
+                    }
+                  } catch {
+                    keepCorpusStartFlow();
+                  }
+                }
+                setPid(id);
+              }}
               go={(page) => go(page)}
             />
           ) : isLegalPage(view) ? (
@@ -570,8 +791,7 @@ export default function Page() {
                   <h2>{p.title}</h2>
                   <div className="herometa">
                     <i className="fa-solid fa-graduation-cap" aria-hidden="true" />
-                    {p.type}
-                    {p.person && " · " + p.person}
+                    {projectTypeLabel(p)}
                     <span>·</span>
                     {cs.length} chapitres
                   </div>
@@ -665,31 +885,22 @@ export default function Page() {
                         onChange={(e) => S(e.target.value)}
                       />
                     </label>
-                    {[
-                      ["type", "Type"],
-                      ["theme", "Thème"],
-                      ["chapter", "Chapitre"],
-                      ["source", "Source"],
-                      ["status", "Statut"],
-                    ].map(([k, l]) => (
-                      <select
-                        aria-label={l}
-                        key={k}
-                        value={filter[k] || ""}
-                        onChange={(e) => K({ ...filter, [k]: e.target.value })}
-                      >
-                        <option value="">{l}</option>
-                        {Array.from(
-                          new Set<string>(
-                            p.materials.map((x: any) => x[k]).filter(Boolean),
-                          ),
-                        ).map((v) => (
-                          <option key={v} value={v}>
-                            {k === "chapter" ? chap(v) : v}
-                          </option>
-                        ))}
-                      </select>
-                    ))}
+                    <select
+                      aria-label="Type"
+                      value={filter.type || ""}
+                      onChange={(e) => K({ ...filter, type: e.target.value })}
+                    >
+                      <option value="">Type</option>
+                      {Array.from(
+                        new Set<string>(
+                          p.materials.map((x: any) => x.type).filter(Boolean),
+                        ),
+                      ).map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <section className="panel">
                     {p.materials
@@ -698,9 +909,7 @@ export default function Page() {
                           x.title
                             .toLowerCase()
                             .includes(search.toLowerCase()) &&
-                          Object.entries(filter).every(
-                            ([k, v]) => !v || x[k] === v,
-                          ),
+                          (!filter.type || x.type === filter.type),
                       )
                       .map((x: any) => (
                         <button
@@ -712,21 +921,29 @@ export default function Page() {
                             <FileText size={18} />
                           </span>
                           <span>
+                            <span className="material-code-badge">
+                              {materialCode(x)}
+                            </span>{" "}
                             {x.title}
                             <small>
-                              {materialCode(x)} · {x.type} · {chap(x.chapter)}
+                              Outil :{" "}
+                              {isNoTool(x.toolType)
+                                ? "Aucun"
+                                : x.toolType || "—"}
+                              {!isNoTool(x.toolType) && x.toolUnavailable
+                                ? " (indisponible)"
+                                : ""}
+                              {" · "}
+                              Données : {x.type || "—"}
                             </small>
                           </span>
-                          <span className="pill">{x.status}</span>
                           <ChevronRight size={15} />
                         </button>
                       ))}
                     {!p.materials.some(
                       (x: any) =>
                         x.title.toLowerCase().includes(search.toLowerCase()) &&
-                        Object.entries(filter).every(
-                          ([k, v]) => !v || x[k] === v,
-                        ),
+                        (!filter.type || x.type === filter.type),
                     ) && blank("Aucun matériau correspondant.")}
                   </section>
                 </>
@@ -817,7 +1034,7 @@ export default function Page() {
                 </div>
               )}
             </>
-          )}
+          ))}
         </div>
         <footer className="site-footer">
           <div className="site-footer-inner">
@@ -875,9 +1092,7 @@ export default function Page() {
                         <BookOpen size={18} />
                         <span>
                           {x.title}
-                          <small>
-                            {[x.type, x.person].filter(Boolean).join(" · ")}
-                          </small>
+                          <small>{projectTypeLabel(x)}</small>
                         </span>
                         {x.id === p.id && <Check size={16} />}
                       </button>
@@ -910,79 +1125,233 @@ export default function Page() {
               </>
             ) : (
               <form onSubmit={save}>
-                {field(
-                  modal === "project" ? "Titre du projet" : "Intitulé",
-                  "title",
-                  undefined,
-                  true,
-                )}
+                {modal !== "material" &&
+                  field(
+                    modal === "project" ? "Titre du projet" : "Intitulé",
+                    "title",
+                    undefined,
+                    true,
+                  )}
                 {modal === "project" && (
                   <>
-                    {field("Personne accompagnée", "person", undefined, true)}
-                    {field(
-                      "Modèle du projet",
-                      "type",
-                      Object.keys(templates),
-                      true,
+                    <label className="field-select">
+                      Type de projet
+                      <TopicSelect
+                        value={form.type || ""}
+                        onChange={(value) => {
+                          val("type", value);
+                          if (value !== "Autre") val("typeOther", "");
+                        }}
+                        placeholder="Choisir un type…"
+                        allowEmpty={false}
+                        options={[...PROJECT_MODEL_OPTIONS]}
+                        aria-label="Type de projet"
+                      />
+                    </label>
+                    {form.type === "Autre" && (
+                      <label>
+                        Précisez le type de projet
+                        <input
+                          required
+                          maxLength={120}
+                          value={form.typeOther || ""}
+                          placeholder="Ex. rapport de stage, dossier de recherche…"
+                          onChange={(e) => val("typeOther", e.target.value)}
+                        />
+                      </label>
                     )}
                   </>
                 )}
                 {modal === "material" && (
                   <>
-                    {field(
-                      "Type de matériau",
-                      "type",
-                      Object.keys(types),
-                      true,
-                    )}
-                    <div className="pair">
-                      {field("Thème", "theme")}
-                      {field("Source", "source")}
-                    </div>
-                    {chapterField()}
-                    {field(
-                      "Statut",
-                      "status",
-                      ["À classer", "Classé", "À vérifier", "Validé"],
-                      true,
-                    )}
-                    {(types[form.type] || []).map((k) => (
-                      <label key={k}>
-                        {k}
+                    <label>
+                      Intitulé
+                      <div className="material-title-with-code">
                         <input
-                          value={form.extra?.[k] || ""}
-                          onChange={(e) =>
-                            val("extra", { ...form.extra, [k]: e.target.value })
-                          }
+                          required
+                          value={form.title || ""}
+                          onChange={(e) => val("title", e.target.value)}
+                          placeholder="Ex. Entretien E03 — usages numériques"
+                        />
+                        {form.id && form.type && (
+                          <span
+                            className="material-code-badge"
+                            title="Code à citer dans le plan de rédaction"
+                          >
+                            {materialCode(form)}
+                          </span>
+                        )}
+                      </div>
+                    </label>
+
+                    <div className="material-dual-block">
+                      <label className="field-select">
+                        Outil de recueil
+                        <TopicSelect
+                          value={form.toolType || ""}
+                          onChange={(value) => {
+                            val("toolType", value);
+                            if (isNoTool(value)) {
+                              val("toolUnavailable", false);
+                              setToolFile(null);
+                            }
+                          }}
+                          placeholder="Choisir l’outil…"
+                          allowEmpty={false}
+                          options={[
+                            ...(form.toolType &&
+                            !TOOL_TYPE_OPTIONS.some(
+                              (o) => o.value === form.toolType,
+                            )
+                              ? [
+                                  {
+                                    value: form.toolType,
+                                    label: form.toolType,
+                                  },
+                                ]
+                              : []),
+                            ...TOOL_TYPE_OPTIONS,
+                          ]}
+                          aria-label="Outil de recueil"
                         />
                       </label>
-                    ))}
+                      {isNoTool(form.toolType) ? (
+                        <p className="material-kind-hint">
+                          Aucun outil associé à cette fiche.
+                        </p>
+                      ) : (
+                        <>
+                          <p className="material-kind-hint">
+                            Joignez le fichier de l’outil, ou déclarez-le
+                            indisponible.
+                          </p>
+                          <label className="inline-check material-tool-unavailable">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(form.toolUnavailable)}
+                              onChange={(e) => {
+                                val("toolUnavailable", e.target.checked);
+                                if (e.target.checked) setToolFile(null);
+                              }}
+                            />{" "}
+                            Outil indisponible (non joint)
+                          </label>
+                          {!form.toolUnavailable && (
+                            <>
+                              {form.toolFile && (
+                                <a
+                                  className="material-file-link"
+                                  href={
+                                    "/api/workspace?file=" + form.toolFile
+                                  }
+                                >
+                                  <Download size={15} /> {form.toolFilename}
+                                </a>
+                              )}
+                              <label className="material-upload">
+                                <span className="material-upload-btn">
+                                  <Files size={16} />
+                                  {toolFile || form.toolFilename
+                                    ? "Remplacer l’outil"
+                                    : "Joindre l’outil"}
+                                </span>
+                                <span className="material-upload-meta">
+                                  {toolFile
+                                    ? toolFile.name
+                                    : "Word, PDF ou image · 20 Mo max"}
+                                </span>
+                                <input
+                                  type="file"
+                                  accept=".pdf,.doc,.docx,.txt,.md,.csv,.tsv,.xlsx,.png,.jpg,.jpeg,.webp,.gif"
+                                  onChange={(e) => {
+                                    setToolFile(e.target.files?.[0] || null);
+                                    if (e.target.files?.[0])
+                                      val("toolUnavailable", false);
+                                  }}
+                                />
+                              </label>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    <div className="material-dual-block">
+                      <label className="field-select">
+                        Données recueillies
+                        <TopicSelect
+                          value={form.type || ""}
+                          onChange={(value) => val("type", value)}
+                          placeholder="Choisir les données…"
+                          allowEmpty={false}
+                          options={[
+                            ...(form.type &&
+                            !DATA_TYPE_OPTIONS.some(
+                              (o) => o.value === form.type,
+                            )
+                              ? [{ value: form.type, label: form.type }]
+                              : []),
+                            ...DATA_TYPE_OPTIONS,
+                          ]}
+                          aria-label="Données recueillies"
+                        />
+                      </label>
+                      <p className="material-kind-hint">
+                        Fichier obligatoire : entretien, réponses, notes,
+                        archives…
+                      </p>
+                      {form.file && (
+                        <a
+                          className="material-file-link"
+                          href={"/api/workspace?file=" + form.file}
+                        >
+                          <Download size={15} /> {form.filename}
+                        </a>
+                      )}
+                      <label className="material-upload">
+                        <span className="material-upload-btn">
+                          <Files size={16} />
+                          {file || form.filename
+                            ? "Remplacer les données"
+                            : "Joindre les données"}
+                        </span>
+                        <span className="material-upload-meta">
+                          {file
+                            ? file.name
+                            : "Fichier obligatoire · Word, PDF ou image · 20 Mo max"}
+                        </span>
+                        <input
+                          type="file"
+                          accept=".pdf,.doc,.docx,.txt,.md,.csv,.tsv,.xlsx,.png,.jpg,.jpeg,.webp,.gif"
+                          onChange={(e) => H(e.target.files?.[0] || null)}
+                        />
+                      </label>
+                      {form.extracted && (
+                        <details>
+                          <summary>Texte extrait des données</summary>
+                          <pre className="source-passage">
+                            {form.extracted}
+                          </pre>
+                        </details>
+                      )}
+                      {form.toolExtracted && !form.toolUnavailable && (
+                        <details>
+                          <summary>Texte extrait de l’outil</summary>
+                          <pre className="source-passage">
+                            {form.toolExtracted}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+
                     {field(
-                      "Notes et contenu",
-                      "text",
+                      "Observation",
+                      "observation",
                       undefined,
                       false,
                       "area",
+                      "Contexte, précisions ou points saillants…",
                     )}
-                    {form.extracted && (
-                      <details>
-                        <summary>Texte extrait du fichier</summary>
-                        <pre className="source-passage">{form.extracted}</pre>
-                      </details>
-                    )}
-                    {form.file && (
-                      <a href={"/api/workspace?file=" + form.file}>
-                        <Download size={15} /> {form.filename}
-                      </a>
-                    )}
-                    <label>
-                      Document joint (20 Mo maximum, transcription requise pour
-                      les images et scans)
-                      <input
-                        type="file"
-                        onChange={(e) => H(e.target.files?.[0] || null)}
-                      />
-                    </label>
                     <Attestation checked={attested} onChange={attest} />
                   </>
                 )}
@@ -1154,7 +1523,10 @@ export default function Page() {
                   >
                     Annuler
                   </button>
-                  <button className="primary" disabled={!ready || busy}>
+                  <button
+                    className="primary"
+                    disabled={!ready || busy || !formSaveReady}
+                  >
                     {busy
                       ? "Enregistrement…"
                       : modal === "project"

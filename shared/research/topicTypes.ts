@@ -122,6 +122,8 @@ export type DocumentSection = {
   bullets?: string[];
   /** Tableau de route (surtout pour le plan de travail). */
   table?: DocumentTable;
+  /** Rôle de phase (planning) — optionnel, absent des documents déjà générés. */
+  role?: import("./workPlan").PhaseRole;
 };
 
 export type TopicDocument = {
@@ -130,6 +132,8 @@ export type TopicDocument = {
   title: string;
   subtitle?: string;
   sections: DocumentSection[];
+  /** Planning unifié — optionnel (documents déjà générés sans ce champ). */
+  workPlan?: import("./workPlan").WorkPlan | null;
 };
 
 export const SKIP_VALUE = "__skip__";

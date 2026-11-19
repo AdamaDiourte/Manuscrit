@@ -6,11 +6,19 @@ import {
   type DocumentKind,
   type ProjectTypeId,
 } from "../../../../shared/research/documentStructures";
+import { writingStructureFor } from "../../../../shared/research/corpusOrganization";
 import type {
   GeneratedTopic,
   TopicDocument,
   TopicsOutput,
 } from "../../../../shared/research/topicTypes";
+import {
+  buildWorkPlanFromTopic,
+  joinSentences,
+  workPlanToScheduleTable,
+  type WorkPlan,
+} from "../../../../shared/research/workPlan";
+import { topicQuestions } from "../../../../shared/research/topicQuestions";
 
 function projectLabel(answers: Record<string, unknown>) {
   const id = normalizeProjectType(answers.project_type);
@@ -169,6 +177,11 @@ function paragraph(text: string) {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function questionOptionLabel(questionId: string, value: string): string {
+  const q = topicQuestions.find((item) => item.id === questionId);
+  return q?.options?.find((o) => o.value === value)?.label || value;
+}
+
 function expandSection(
   heading: string,
   intent: string,
@@ -177,6 +190,7 @@ function expandSection(
   kind: DocumentKind,
   answers: Record<string, unknown>,
   sectionId?: string,
+  workPlan?: WorkPlan | null,
 ): {
   paragraphs: string[];
   bullets?: string[];
@@ -190,54 +204,12 @@ function expandSection(
     typeof answers.weekly_time === "string" ? answers.weekly_time : "";
   const imposedBy =
     typeof answers.imposed_by === "string" ? answers.imposed_by : "";
-  const deadlineLabel =
-    deadline === "lt3m"
-      ? "moins de 3 mois"
-      : deadline === "3to6m"
-        ? "3 à 6 mois"
-        : deadline === "6to12m"
-          ? "6 à 12 mois"
-          : deadline === "gt1y"
-            ? "plus d’un an"
-            : deadline === "gt3y"
-              ? "plus de 3 ans"
-              : "à confirmer";
-  const weeklyLabel =
-    weekly === "lt5"
-      ? "moins de 5 h / semaine"
-      : weekly === "5to10"
-        ? "5 à 10 h / semaine"
-        : weekly === "10to20"
-          ? "10 à 20 h / semaine"
-          : weekly === "fulltime"
-            ? "temps plein"
-            : "à confirmer";
-  const charge =
-    weekly === "lt5"
-      ? ["3–4 h", "4–5 h", "4–5 h", "5–6 h", "3–4 h"]
-      : weekly === "5to10"
-        ? ["6–8 h", "8–10 h", "8–10 h", "10–12 h", "6–8 h"]
-        : weekly === "10to20"
-          ? ["12–15 h", "14–18 h", "14–18 h", "16–20 h", "10–14 h"]
-          : weekly === "fulltime"
-            ? ["25–30 h", "28–35 h", "28–35 h", "30–35 h", "20–28 h"]
-            : ["6–8 h", "8–10 h", "8–10 h", "10–12 h", "6–8 h"];
-  const periods =
-    deadline === "lt3m"
-      ? [
-          "Semaines 1–2",
-          "Semaines 3–4",
-          "Semaines 5–6",
-          "Semaines 7–8",
-          "Dernière semaine",
-        ]
-      : deadline === "3to6m"
-        ? ["Mois 1", "Mois 2", "Mois 3–4", "Mois 5", "Mois 6"]
-        : deadline === "6to12m"
-          ? ["Mois 1–2", "Mois 3–4", "Mois 5–7", "Mois 8–10", "Mois 11–12"]
-          : deadline === "gt3y"
-            ? ["Année 1", "Année 2", "Année 3 (début)", "Année 3 (milieu)", "Fin de parcours"]
-            : ["Trimestre 1", "Trimestre 2", "Trimestre 3", "Trimestre 4", "Finalisation"];
+  const deadlineLabel = deadline
+    ? questionOptionLabel("deadline_range", deadline)
+    : "à confirmer";
+  const weeklyLabel = weekly
+    ? questionOptionLabel("weekly_time", weekly)
+    : "à confirmer";
 
   if (kind === "work_plan") {
     if (sectionId === "identity") {
@@ -266,52 +238,45 @@ function expandSection(
       };
     }
     if (sectionId === "schedule") {
+      const table = workPlan
+        ? workPlanToScheduleTable(workPlan)
+        : {
+            headers: ["Période", "Objectif", "Actions", "Livrable", "Charge"],
+            rows: [
+              [
+                "Période 1",
+                "Cadrer",
+                "Préciser la question ; recenser 10–15 sources",
+                "Note de cadrage (1 p.)",
+                "à confirmer",
+              ],
+              [
+                "Période 2",
+                "Collecter",
+                `Préparer ${topic.field_or_corpus}`,
+                "Grille ou corpus annoté",
+                "à confirmer",
+              ],
+              [
+                "Période 3",
+                "Analyser",
+                "Coder / classer ; tester une hypothèse",
+                "Tableau de résultats",
+                "à confirmer",
+              ],
+            ],
+          };
       return {
         paragraphs: [
           paragraph(
-            `Planning proposé à partir du délai (${deadlineLabel}) et du rythme hebdomadaire (${weeklyLabel}). Ajustez les dates exactes avec votre encadrement.`,
+            joinSentences(
+              `Planning proposé à partir du délai (${deadlineLabel}) et du rythme hebdomadaire (${weeklyLabel})`,
+              "Ajustez les dates exactes avec votre encadrement",
+              "Ce calendrier est indicatif",
+            ),
           ),
         ],
-        table: {
-          headers: ["Période", "Objectif", "Actions", "Livrable", "Charge"],
-          rows: [
-            [
-              periods[0],
-              "Cadrer",
-              "Préciser la question ; recenser 10–15 sources",
-              "Note de cadrage (1 p.)",
-              charge[0],
-            ],
-            [
-              periods[1],
-              "Collecter",
-              `Préparer ${topic.field_or_corpus}`,
-              "Grille ou corpus annoté",
-              charge[1],
-            ],
-            [
-              periods[2],
-              "Analyser",
-              "Coder / classer ; tester une hypothèse",
-              "Tableau de résultats",
-              charge[2],
-            ],
-            [
-              periods[3],
-              "Rédiger",
-              "Écrire les parties centrales ; relire",
-              "Brouillon structuré",
-              charge[3],
-            ],
-            [
-              periods[4],
-              "Finaliser",
-              "Intro, conclusion, normes, checklist",
-              "Version remisable",
-              charge[4],
-            ],
-          ],
-        },
+        table,
       };
     }
     if (sectionId === "priorities") {
@@ -345,32 +310,206 @@ function expandSection(
     };
   }
 
-  const p1 = paragraph(
-    `${heading}. ${intent} Le fil conducteur reste le sujet « ${topic.title} ». La question de recherche retenue est la suivante : ${topic.research_question}`,
-  );
-  const p2 = paragraph(
-    `Ce travail s’inscrit dans un ${typeLabel}. Il doit rester réaliste au regard du profil : délai déclaré (${deadline || "non précisé"}), temps hebdomadaire (${weekly || "non précisé"}), méthode envisagée (${topic.method}). ${
-      imposedBy
-        ? `Le cadre imposé par ${imposedBy} oriente les choix sans remplacer votre analyse.`
-        : "La liberté de choix déclarée laisse de la marge pour préciser l’angle."
-    }`,
-  );
-  const p3 = paragraph(
-    `Concrètement, l’objet « ${theme} » sera traité à partir du terrain ou du corpus suivant : ${topic.field_or_corpus}. Les premiers pas utiles sont déjà identifiés : ${topic.feasibility.first_steps.join(" ; ")}. Cette section précise comment avancer sans empiler des ambitions inutiles.`,
-  );
-  const p4 = paragraph(
-    `Pour garder un ton de travail clair, chaque étape doit produire un livrable court (note, grille, tableau, paragraphe). Cela évite les phrases trop longues et les plans décoratifs. Le niveau d’exigence doit correspondre au ${typeLabel}, pas à un autre genre académique.`,
-  );
-  const p5 = paragraph(
-    `Enfin, les risques déjà repérés (${topic.feasibility.risks.join(" ; ") || "à surveiller au fil de l’eau"}) doivent être relus à chaque jalon. Si une information manque dans le profil, elle sera traitée comme point à vérifier auprès de l’encadrement, jamais comme un fait inventé.`,
-  );
+  const openingIds = new Set([
+    "context",
+    "intro",
+    "presentation",
+    "opening",
+  ]);
+  const isOpening =
+    !sectionId ||
+    openingIds.has(sectionId) ||
+    /contexte|introduction|pr[eé]sentation|int[eé]r[eê]t/i.test(heading);
+
+  if (isOpening) {
+    return {
+      paragraphs: [
+        paragraph(
+          joinSentences(
+            heading,
+            intent,
+            `Le fil conducteur reste le sujet « ${topic.title} »`,
+            `La question de recherche retenue est la suivante : ${topic.research_question}`,
+          ),
+        ),
+        paragraph(
+          joinSentences(
+            `Ce travail s’inscrit dans un ${typeLabel}`,
+            `Il doit rester réaliste au regard du profil : délai déclaré (${deadlineLabel}), temps hebdomadaire (${weeklyLabel}), méthode envisagée (${topic.method})`,
+            imposedBy
+              ? `Le cadre imposé par ${imposedBy} oriente les choix sans remplacer votre analyse`
+              : "La liberté de choix déclarée laisse de la marge pour préciser l’angle",
+          ),
+        ),
+        paragraph(
+          joinSentences(
+            `Concrètement, l’objet « ${theme} » sera traité à partir du terrain ou du corpus suivant : ${topic.field_or_corpus}`,
+            `Les premiers pas utiles sont déjà identifiés : ${topic.feasibility.first_steps.join(" ; ")}`,
+            "Cette section précise comment avancer sans empiler des ambitions inutiles",
+          ),
+        ),
+        paragraph(
+          joinSentences(
+            "Pour garder un ton de travail clair, chaque étape doit produire un livrable court (note, grille, tableau, paragraphe)",
+            "Cela évite les phrases trop longues et les plans décoratifs",
+            `Le niveau d’exigence doit correspondre au ${typeLabel}, pas à un autre genre académique`,
+          ),
+        ),
+        paragraph(
+          joinSentences(
+            `Enfin, les risques déjà repérés (${topic.feasibility.risks.join(" ; ") || "à surveiller au fil de l’eau"}) doivent être relus à chaque jalon`,
+            "Si une information manque dans le profil, elle sera traitée comme point à vérifier auprès de l’encadrement, jamais comme un fait inventé",
+          ),
+        ),
+      ],
+      bullets: [
+        `Hypothèse à tester : ${topic.hypotheses[0] || "à préciser"}`,
+        `Méthode : ${topic.method}`,
+        `Faisabilité estimée : ${topic.feasibility.level}`,
+      ],
+    };
+  }
+
+  if (sectionId === "problem" || /probl[eé]mat|hypoth/i.test(heading)) {
+    return {
+      paragraphs: [
+        paragraph(
+          joinSentences(
+            intent,
+            `Reformuler la question « ${topic.research_question} » de façon opérationalisable pour un ${typeLabel}`,
+          ),
+        ),
+        paragraph(
+          joinSentences(
+            `Les hypothèses à tester sont les suivantes : ${topic.hypotheses.join(" ; ")}`,
+            "Chaque hypothèse doit pouvoir être confrontée aux matériaux disponibles, sans surcharger le dispositif",
+          ),
+        ),
+      ],
+      bullets: topic.hypotheses.slice(0, 3).map((h) => `Piste : ${h}`),
+    };
+  }
+
+  if (sectionId === "theory" || /th[eé]or|litt[eé]rature|[eé]tat/i.test(heading)) {
+    return {
+      paragraphs: [
+        paragraph(
+          joinSentences(
+            intent,
+            "Retenir seulement les notions qui éclairent l’analyse prévue, sans inventaire bibliographique décoratif",
+          ),
+        ),
+        paragraph(
+          joinSentences(
+            `Relier ces repères à la méthode retenue (${topic.method})`,
+            "Signaler clairement ce qui reste à lire auprès de l’encadrement",
+          ),
+        ),
+      ],
+      bullets: [
+        "Notions clés à définir",
+        "Lectures prioritaires à valider",
+        "Angles à écarter faute de temps",
+      ],
+    };
+  }
+
+  if (sectionId === "method" || /m[eé]thode|dispositif|design/i.test(heading)) {
+    return {
+      paragraphs: [
+        paragraph(
+          joinSentences(
+            intent,
+            `Décrire concrètement « ${topic.method} » et ses critères de sélection`,
+          ),
+        ),
+        paragraph(
+          joinSentences(
+            `Situer le dispositif par rapport à « ${topic.field_or_corpus} »`,
+            "Assumer les limites d’accès et le calendrier déclaré",
+          ),
+        ),
+      ],
+      bullets: [
+        "Étapes du protocole",
+        "Critères d’inclusion",
+        "Points éthiques à clarifier",
+      ],
+    };
+  }
+
+  if (sectionId === "plan" || /plan provisoire|architecture|chapitres/i.test(heading)) {
+    return {
+      paragraphs: [
+        paragraph(
+          joinSentences(
+            intent,
+            `Proposer une architecture de chapitres tenable pour un ${typeLabel} sur le sujet « ${topic.title} »`,
+          ),
+        ),
+        paragraph(
+          "Chaque partie doit produire un livrable court et s’appuyer sur des preuves déposées, du simple au complexe.",
+        ),
+      ],
+      bullets: [
+        "Ouverture et cadrage",
+        "Développement analytique",
+        "Discussion et conclusion",
+      ],
+    };
+  }
+
+  if (sectionId === "schedule" || /calendrier|planning|jalon/i.test(heading)) {
+    return {
+      paragraphs: [
+        paragraph(
+          joinSentences(
+            intent,
+            `Découper le travail selon le délai (${deadlineLabel}) et le rythme (${weeklyLabel})`,
+          ),
+        ),
+        paragraph(
+          "Prévoir une marge de relecture avant le rendu et des points d’encadrement aux bascules de phase.",
+        ),
+      ],
+      bullets: topic.feasibility.first_steps.slice(0, 3),
+    };
+  }
+
+  if (sectionId === "ethics" || /attention|limite|pr[eé]caution|[eé]thique/i.test(heading)) {
+    return {
+      paragraphs: [
+        paragraph(
+          joinSentences(
+            intent,
+            `Surveiller notamment : ${topic.feasibility.risks.join(" ; ") || "accès aux données et retard de rédaction"}`,
+          ),
+        ),
+        paragraph(
+          "Toute information manquante sera traitée comme point à vérifier auprès de l’encadrement, jamais comme un fait inventé.",
+        ),
+      ],
+      bullets: [
+        "Consentement et anonymisation si besoin",
+        "Sources vérifiables uniquement",
+        "Périmètre borné au temps disponible",
+      ],
+    };
+  }
 
   return {
-    paragraphs: [p1, p2, p3, p4, p5],
+    paragraphs: [
+      paragraph(joinSentences(heading, intent)),
+      paragraph(
+        joinSentences(
+          `Relier cette partie au sujet « ${topic.title} » sans répéter le cadrage général`,
+          "Produire un livrable court ancré dans les matériaux ou lectures déjà identifiés",
+        ),
+      ),
+    ],
     bullets: [
-      `Hypothèse à tester : ${topic.hypotheses[0] || "à préciser"}`,
-      `Méthode : ${topic.method}`,
-      `Faisabilité estimée : ${topic.feasibility.level}`,
+      `Terrain / corpus : ${topic.field_or_corpus}`,
+      `Premier pas : ${topic.feasibility.first_steps[0] || "à préciser avec l’encadrement"}`,
     ],
   };
 }
@@ -382,6 +521,15 @@ export function simulateDocument(input: {
 }): TopicDocument {
   const projectType = normalizeProjectType(input.answers.project_type);
   const outline = getDocumentOutline(projectType, input.kind);
+  const structure = writingStructureFor(projectType);
+  const workPlan =
+    input.kind === "work_plan"
+      ? buildWorkPlanFromTopic({
+          answers: input.answers,
+          topic: input.topic,
+          sections: structure,
+        })
+      : null;
   const sections = outline.sections.map((section) => {
     const body = expandSection(
       section.heading,
@@ -391,6 +539,7 @@ export function simulateDocument(input: {
       input.kind,
       input.answers,
       section.id,
+      workPlan,
     );
     return {
       id: section.id,
@@ -410,5 +559,6 @@ export function simulateDocument(input: {
         : `Plan de travail : ${input.topic.title}`,
     subtitle: `${PROJECT_TYPE_LABELS[projectType]} · simulation`,
     sections,
+    ...(workPlan ? { workPlan } : {}),
   };
 }

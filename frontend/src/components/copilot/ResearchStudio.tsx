@@ -1,14 +1,32 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  materialCode,
-  materialText,
-} from "../../../../shared/research/project";
+import { materialCode } from "../../../../shared/research/project";
 import type { GeneratedTopic } from "../../../../shared/research/topicTypes";
 import {
   documentKindLabel,
   normalizeProjectType,
 } from "../../../../shared/research/documentStructures";
-import Attestation from "./Attestation";
+import {
+  disciplineLabel,
+  documentTypeLabel,
+  expectedLengthLabel,
+  writingTimeDays,
+  writingTimeLabel,
+  type CorpusStep,
+} from "../../../../shared/research/corpusOrganization";
+import {
+  buildWorkPlan,
+  findSubmissionEndDate,
+} from "../../../../shared/research/workPlan";
+import {
+  buildWritingSchedule,
+  workPlanToWritingSchedule,
+} from "../../../../shared/research/writingSchedule";
+import CorpusOrganizer from "./CorpusOrganizer";
+import WritingPlanView from "./WritingPlanView";
+import SourcePassageDialog, {
+  type PassagePayload,
+} from "./SourcePassageDialog";
+import { downloadPlanDocx } from "./downloadPlanDocx";
 import TopicGenerator from "../topics/TopicGenerator";
 import type { DocFile } from "../topics/TopicResults";
 import { useConfirmDialog } from "../topics/ConfirmDialog";
@@ -26,17 +44,166 @@ export type ResearchPage =
   | "Organiser mon manuscrit";
 
 type Mode = "design" | "corpus";
-type Intent = "gate" | "start" | "resume";
+type Intent = "gate" | "start" | "resume" | "plan";
+
+const RESUME_KEY = "manuscrit-research-resume";
+const OPEN_MATERIAL_KEY = "manuscrit-open-material";
+const CORPUS_ENTRY_STEP_KEY = "manuscrit-corpus-entry-step";
+
+function readCorpusEntryStep(): CorpusStep | null {
+  try {
+    const step = sessionStorage.getItem(CORPUS_ENTRY_STEP_KEY);
+    sessionStorage.removeItem(CORPUS_ENTRY_STEP_KEY);
+    if (
+      step === "frame" ||
+      step === "materials" ||
+      step === "plan" ||
+      step === "project" ||
+      step === "notice"
+    ) {
+      return step;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export function keepCorpusStartFlow() {
+  try {
+    sessionStorage.setItem(RESUME_KEY, "corpus-start");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function keepCorpusProjectsFlow(next: "resume" | "plan" = "resume") {
+  try {
+    sessionStorage.setItem(
+      RESUME_KEY,
+      next === "plan" ? "corpus-plan" : "corpus-projects",
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function readResumeIntent(): Intent {
+  try {
+    const stored = sessionStorage.getItem(RESUME_KEY);
+    if (stored === "corpus-start") {
+      sessionStorage.removeItem(RESUME_KEY);
+      return "start";
+    }
+    if (stored === "corpus-projects") {
+      sessionStorage.removeItem(RESUME_KEY);
+      return "resume";
+    }
+    if (stored === "corpus-plan") {
+      sessionStorage.removeItem(RESUME_KEY);
+      return "plan";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "gate";
+}
+
+type ProjectSummary = {
+  id: string;
+  title: string;
+  type: string;
+  typeOther?: string;
+  demo?: boolean;
+  materials?: {
+    id: string;
+    title: string;
+    type: string;
+    hasText: boolean;
+  }[];
+  frame?: {
+    documentType?: string;
+    documentTypeOther?: string;
+    discipline?: string;
+    disciplineOther?: string;
+    expectedLength?: string;
+    writingTime?: string;
+    startDate?: string;
+    brief?: string;
+  };
+  dates?: { id?: string; title?: string; date?: string }[];
+  plan?: {
+    date?: string;
+    simulated?: boolean;
+    model?: string;
+    sections?: number;
+    data?: any;
+  } | null;
+};
 
 type Props = {
   page: ResearchPage;
   p: any;
+  projects: ProjectSummary[];
   ready: boolean;
   save: (draft: any) => Promise<void>;
   add: () => void;
   open: (m: any) => void;
+  createProject: () => void;
+  deleteProject: (projectId: string) => Promise<void>;
+  selectProject: (id: string) => void;
   go: (page: string) => void;
 };
+
+const PROJECT_TITLE_COLORS = [
+  "#1e4d63",
+  "#8a5a18",
+  "#2f6b5c",
+  "#5c3d12",
+  "#3d5668",
+  "#7a3e2e",
+];
+
+/** Aperçu cadrage dans Mes projets : au-delà, points de suspension. */
+const PROJECT_BRIEF_PREVIEW_CHARS = 160;
+
+function previewBrief(text?: string, max = PROJECT_BRIEF_PREVIEW_CHARS) {
+  const clean = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return "";
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max);
+  const breakAt = Math.max(cut.lastIndexOf(" "), Math.floor(max * 0.7));
+  return cut.slice(0, breakAt).trimEnd() + "…";
+}
+
+/** Efface le parcours « Démarrer » tout en conservant plan et archive. */
+function clearCorpusStartFields(draft: any, full = false) {
+  const next = { ...draft };
+  next.corpusNoticeAccepted = false;
+  next.corpusAiAccepted = false;
+  next.corpusPrivacyAccepted = false;
+  next.corpusProjectConfirmed = false;
+  if (full) {
+    next.documentType = "";
+    next.documentTypeOther = "";
+    next.discipline = "";
+    next.disciplineOther = "";
+    next.specialty = "";
+    next.brief = "";
+    next.expectedLength = "";
+    next.writingTime = "";
+    next.startDate = "";
+    next.excluded = [];
+    next.collectionModes = [];
+    next.collectionModesOther = "";
+    next.collectionCombinedNote = "";
+    next.briefName = "";
+    next.briefFile = "";
+  }
+  return next;
+}
 
 function draftFromTopic(topic: GeneratedTopic) {
   return {
@@ -78,39 +245,54 @@ const AXIS_LABEL: Record<string, string> = {
   discovery: "Découverte",
 };
 
-function hasCorpusWork(draft: any, materials: any[]) {
-  return Boolean(
-    draft.brief ||
-      draft.briefName ||
-      draft.briefFile ||
-      draft.corpusResult ||
-      materials.length,
-  );
-}
-
 export default function ResearchStudio({
   page,
   p,
+  projects,
   ready,
   save,
   add,
   open,
+  createProject,
+  deleteProject,
+  selectProject,
   go,
 }: Props) {
   const mode = modeOf(page);
-  const [intent, setIntent] = useState<Intent>("gate");
+  const [intent, setIntent] = useState<Intent>(() =>
+    page === "Organiser mon manuscrit" ? readResumeIntent() : "gate",
+  );
   const [freshStart, setFreshStart] = useState(false);
-  const [projectFile, setProjectFile] = useState<File | null>(null);
   const [openProposals, setOpenProposals] = useState<Record<string, boolean>>(
     {},
   );
-  const [draft, set] = useState<any>(p.copilot || {}),
+  const [openCorpusProjects, setOpenCorpusProjects] = useState<
+    Record<string, boolean>
+  >({});
+  const entryStepBoot = useRef(readCorpusEntryStep());
+  const [corpusEntryStep, setCorpusEntryStep] = useState<CorpusStep | null>(
+    () => entryStepBoot.current,
+  );
+  const [draft, set] = useState<any>(() => {
+    const base = p.copilot || {};
+    if (entryStepBoot.current && !p.demo) {
+      return {
+        ...base,
+        corpusProjectConfirmed: true,
+        corpusNoticeAccepted: true,
+        corpusAiAccepted: true,
+        corpusPrivacyAccepted: true,
+      };
+    }
+    return base;
+  }),
     [consent, agree] = useState(false),
     [external, search] = useState(false),
+    [simulatePlan, setSimulatePlan] = useState(true),
     [query, setQuery] = useState(""),
     [busy, wait] = useState(false),
     [msg, notice] = useState(""),
-    [reading, read] = useState<any>(null);
+    [reading, read] = useState<PassagePayload | null>(null);
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
@@ -125,6 +307,20 @@ export default function ResearchStudio({
       return { ...local, topicArchive: merged };
     });
   }, [p.copilot]);
+
+  useEffect(() => {
+    if (mode !== "corpus") return;
+    let materialId = "";
+    try {
+      materialId = sessionStorage.getItem(OPEN_MATERIAL_KEY) || "";
+      if (materialId) sessionStorage.removeItem(OPEN_MATERIAL_KEY);
+    } catch {
+      return;
+    }
+    if (!materialId) return;
+    const m = (p.materials || []).find((x: any) => x.id === materialId);
+    if (m) open(m);
+  }, [mode, p.id, p.materials, open]);
 
   function proposalsOpen(entryId: string, index: number) {
     if (Object.prototype.hasOwnProperty.call(openProposals, entryId)) {
@@ -147,34 +343,36 @@ export default function ResearchStudio({
     notice("");
   };
 
-  async function persist(run: boolean) {
-    if (busy || !mode) return;
+  async function persist(run: boolean): Promise<boolean> {
+    if (busy || !mode) return false;
     wait(true);
     notice("");
     try {
       if (!consent) throw Error("Confirmez les conditions de dépôt.");
-      let savedDraft = draft;
-      if (projectFile) {
-        const upload = await fetch(
-          "/api/workspace?upload=1&name=" +
-            encodeURIComponent(projectFile.name),
-          {
-            method: "POST",
-            headers: { "X-Deposit-Attested": "yes" },
-            body: projectFile,
-          },
-        );
-        if (!upload.ok)
-          throw Error("Le fichier du projet n’a pas pu être déposé.");
-        const { id } = (await upload.json()) as { id: string };
-        savedDraft = { ...draft, briefFile: id };
-        set(savedDraft);
-        setProjectFile(null);
+      if (mode === "corpus") {
+        if (p.demo || !draft.corpusProjectConfirmed)
+          throw Error(
+            "Créez ou choisissez un projet personnel, puis confirmez l’association.",
+          );
+        if (
+          !(
+            draft.corpusNoticeAccepted &&
+            draft.corpusAiAccepted &&
+            draft.corpusPrivacyAccepted
+          )
+        )
+          throw Error(
+            "Acceptez d’abord les conditions d’anonymisation et d’usage de l’IA.",
+          );
+        if (!(p.materials || []).length)
+          throw Error(
+            "Ajoutez au moins une fiche (outil + données recueillies) avant de continuer.",
+          );
       }
-      await save(savedDraft);
+      await save(draft);
       if (!run) {
         notice("Cadrage enregistré dans ce projet.");
-        return;
+        return true;
       }
       const response = await fetch("/api/research", {
         method: "POST",
@@ -183,45 +381,40 @@ export default function ResearchStudio({
           projectId: p.id,
           mode,
           consent,
+          simulate: mode === "corpus" ? simulatePlan : false,
           publicQuery: external ? query : "",
         }),
       });
       const result = (await response.json()) as any;
       if (!response.ok) throw Error(result.error);
-      const next = { ...savedDraft, [mode + "Result"]: result };
+      const next = { ...draft, [mode + "Result"]: result };
       set(next);
       await save(next);
       notice(
-        "Proposition enregistrée. Examinez chaque piste avant de la retenir.",
+        mode === "corpus"
+          ? result.simulated
+            ? "Aperçu simulé enregistré. Ce n’est pas encore un plan produit par le service IA."
+            : "Plan de rédaction enregistré. Vérifiez chaque section et les extraits cités avant de les retenir."
+          : "Proposition enregistrée. Examinez chaque piste avant de la retenir.",
       );
+      return true;
     } catch (e: any) {
       notice(e.message || "Enregistrement impossible.");
+      return false;
     } finally {
       wait(false);
     }
   }
 
-  async function importBrief(file?: File) {
-    if (!file) return;
-    try {
-      const { extractText } = await import("../../services/import/extractText");
-      const text = await extractText(file);
-      if (text.length > 30000)
-        throw Error(
-          "Le projet dépasse 30 000 caractères. Importez une synthèse.",
-        );
-      update("brief", text);
-      update("briefName", file.name);
-      setProjectFile(file);
-    } catch (e: any) {
-      notice(e.message);
-    }
-  }
-
   const result = mode ? draft[mode + "Result"] : null;
-  const corpusReady = hasCorpusWork(draft, p.materials || []);
   const topicArchive = archiveList(draft);
   const hasProposals = topicArchive.length > 0;
+
+  useEffect(() => {
+    if (mode === "corpus" && intent === "plan" && !result) {
+      setIntent("resume");
+    }
+  }, [mode, intent, result]);
 
   async function persistDraft(nextDraft: any) {
     set(nextDraft);
@@ -378,6 +571,247 @@ export default function ResearchStudio({
     }
   }
 
+  async function resetCorpusStart(full: boolean) {
+    const next = clearCorpusStartFields(draft, full);
+    set(next);
+    agree(false);
+    search(false);
+    setSimulatePlan(true);
+    setQuery("");
+    await persistDraft(next);
+  }
+
+  async function abandonCorpusStart() {
+    if (busy) return;
+    const confirmed = await confirm({
+      title: "Abandonner ce démarrage",
+      message:
+        "Le formulaire en cours sera réinitialisé (consentement et cadrage). Les matériaux et le plan déjà enregistrés sur le projet sont conservés.",
+      confirmLabel: "Abandonner",
+      cancelLabel: "Continuer",
+      danger: true,
+    });
+    if (!confirmed) return;
+    wait(true);
+    notice("");
+    try {
+      await resetCorpusStart(true);
+      notice("Démarrage abandonné. Formulaire réinitialisé.");
+      setIntent("gate");
+    } catch (e: any) {
+      notice(e.message || "Réinitialisation impossible.");
+    } finally {
+      wait(false);
+    }
+  }
+
+  function projectPlanPayload(project: ProjectSummary) {
+    const planData =
+      project.plan?.data ||
+      (project.id === p.id ? draft.corpusResult || result : null);
+    const writingTime =
+      project.frame?.writingTime ||
+      (project.id === p.id ? draft.writingTime : undefined);
+    const documentType =
+      project.frame?.documentType ||
+      (project.id === p.id ? draft.documentType : undefined);
+    const documentTypeOther =
+      project.frame?.documentTypeOther ||
+      (project.id === p.id ? draft.documentTypeOther : undefined);
+    const startDate =
+      project.frame?.startDate ||
+      (project.id === p.id ? draft.startDate : undefined) ||
+      undefined;
+    const endDate = findSubmissionEndDate(
+      project.id === p.id ? p.dates : project.dates,
+    );
+    const workPlan =
+      planData?.workPlan?.phases?.length
+        ? planData.workPlan
+        : planData?.sections?.length
+          ? buildWorkPlan({
+              writingTime,
+              totalDays: writingTimeDays(writingTime) || undefined,
+              durationLabel: writingTimeLabel(writingTime) || undefined,
+              documentType,
+              documentTypeOther,
+              startDate,
+              endDate,
+              sections: planData.sections,
+            })
+          : null;
+    const schedule =
+      planData?.schedule?.items?.length
+        ? planData.schedule
+        : workPlan
+          ? workPlanToWritingSchedule(workPlan, writingTimeLabel(writingTime))
+          : planData?.sections?.length
+            ? buildWritingSchedule({
+                writingTime,
+                writingTimeDays: writingTimeDays(writingTime),
+                writingTimeLabel: writingTimeLabel(writingTime),
+                sections: planData.sections,
+                documentType,
+                documentTypeOther,
+                startDate,
+                endDate,
+              })
+            : null;
+    const materials =
+      project.id === p.id
+        ? (p.materials || []).map((m: any) => ({
+            id: m.id,
+            title: m.title,
+            type: m.type,
+          }))
+        : (project.materials || []).map((m) => ({
+            id: m.id,
+            title: m.title,
+            type: m.type,
+          }));
+    return {
+      planData: planData
+        ? { ...planData, ...(workPlan ? { workPlan } : {}) }
+        : planData,
+      schedule,
+      workPlan,
+      materials,
+      documentLabel: documentTypeLabel(documentType, documentTypeOther),
+    };
+  }
+
+  async function downloadProjectDoc(
+    project: ProjectSummary,
+    kind: "plan" | "schedule",
+  ) {
+    const { planData, schedule, workPlan, materials, documentLabel } =
+      projectPlanPayload(project);
+    if (kind === "plan" && !planData?.sections?.length) {
+      notice("Aucun plan téléchargeable pour ce projet.");
+      return;
+    }
+    if (kind === "schedule" && !schedule?.items?.length) {
+      notice(
+        "Aucun planning téléchargeable. Indiquez un temps de rédaction dans le cadrage, puis relancez le plan.",
+      );
+      return;
+    }
+    wait(true);
+    notice("");
+    try {
+      await downloadPlanDocx({
+        kind,
+        projectTitle: project.title,
+        documentLabel,
+        plan: {
+          ...planData,
+          schedule: kind === "schedule" ? schedule : undefined,
+          workPlan: kind === "schedule" ? workPlan : undefined,
+          sections: kind === "plan" ? planData.sections : undefined,
+          gaps: kind === "plan" ? planData.gaps : undefined,
+        },
+        materials,
+      });
+      notice(
+        kind === "schedule"
+          ? "Planning téléchargé (Word)."
+          : "Plan de rédaction téléchargé (Word).",
+      );
+    } catch (e: any) {
+      notice(e.message || "Téléchargement Word impossible.");
+    } finally {
+      wait(false);
+    }
+  }
+
+  async function removeCorpusProject(projectId: string, title: string) {
+    if (busy) return;
+    const confirmed = await confirm({
+      title: "Supprimer le projet",
+      message: `Supprimer « ${title} » et tout son contenu (matériaux, cadrage, plan) ? Cette action est définitive.`,
+      confirmLabel: "Supprimer",
+      cancelLabel: "Annuler",
+      danger: true,
+    });
+    if (!confirmed) return;
+    wait(true);
+    notice("");
+    try {
+      keepCorpusProjectsFlow("resume");
+      await deleteProject(projectId);
+      notice("Projet supprimé.");
+      setIntent("resume");
+    } catch (e: any) {
+      notice(e.message || "Suppression impossible.");
+    } finally {
+      wait(false);
+    }
+  }
+
+  function corpusProjectOpen(projectId: string, index: number) {
+    if (Object.prototype.hasOwnProperty.call(openCorpusProjects, projectId)) {
+      return openCorpusProjects[projectId];
+    }
+    return index === 0 || projectId === p.id;
+  }
+
+  function toggleCorpusProject(projectId: string, index: number) {
+    setOpenCorpusProjects((prev) => {
+      const currently = Object.prototype.hasOwnProperty.call(prev, projectId)
+        ? prev[projectId]
+        : index === 0 || projectId === p.id;
+      return { ...prev, [projectId]: !currently };
+    });
+  }
+
+  /** Ouvre le parcours à une étape précise (cadrage / matériaux / demande de plan). */
+  async function openCorpusEditor(
+    step: "frame" | "materials" | "plan",
+    projectId = p.id,
+  ) {
+    if (busy) return;
+    const target = projects.find((x) => x.id === projectId) || {
+      id: projectId,
+      demo: p.demo,
+      title: p.title,
+    };
+    if (target.demo) {
+      notice(
+        "Choisissez ou créez un projet personnel avant de continuer.",
+      );
+      return;
+    }
+    wait(true);
+    notice("");
+    try {
+      if (projectId === p.id) {
+        const next = {
+          ...draft,
+          corpusProjectConfirmed: true,
+          corpusNoticeAccepted: true,
+          corpusAiAccepted: true,
+          corpusPrivacyAccepted: true,
+        };
+        set(next);
+        await persistDraft(next);
+        setCorpusEntryStep(step);
+        setIntent("start");
+      } else {
+        try {
+          sessionStorage.setItem(CORPUS_ENTRY_STEP_KEY, step);
+        } catch {
+          /* ignore */
+        }
+        keepCorpusStartFlow();
+        selectProject(projectId);
+      }
+    } catch (e: any) {
+      notice(e.message || "Ouverture impossible.");
+    } finally {
+      wait(false);
+    }
+  }
+
   if (page === "Accueil")
     return (
       <div className="cp-home">
@@ -414,8 +848,9 @@ export default function ResearchStudio({
             </span>
             <h3>Organiser mon manuscrit</h3>
             <p>
-              Du corpus au plan argumenté, avec des extraits vérifiables et des
-              pistes de discussion.
+              Associez un projet, déposez vos matériaux en indiquant le mode de
+              recueil sur chaque fiche, puis obtenez un plan de rédaction ancré
+              dans vos données.
             </p>
             <b>
               Ouvrir ce parcours <i className="fa-solid fa-arrow-right" />
@@ -434,7 +869,14 @@ export default function ResearchStudio({
     );
 
   if (mode && intent === "gate") {
-    const resumeReady = corpusReady;
+    const corpusProjects = projects.filter((x) => !x.demo);
+    const withWork = corpusProjects.filter(
+      (x) =>
+        (x.materials && x.materials.length > 0) ||
+        x.plan ||
+        x.frame?.documentType ||
+        x.frame?.brief,
+    );
     return (
       <section className="cp-flow topic-flow">
         <div className="topic-flow-bar">
@@ -455,7 +897,7 @@ export default function ResearchStudio({
           <p>
             {mode === "design"
               ? "Démarrez un nouveau parcours, ou consultez l’archive des propositions déjà générées."
-              : "Démarrez l’organisation du corpus, ou reprenez les matériaux et analyses déjà produits."}
+              : "Associez un projet, déposez chaque fiche avec son outil et ses données recueillies, puis demandez un plan de rédaction fondé sur vos données."}
           </p>
           <small className="cp-project-hint">
             {p.demo ? "Parcours d’exemple" : `${p.title} · ${p.type}`}
@@ -477,7 +919,7 @@ export default function ResearchStudio({
             <p>
               {mode === "design"
                 ? "Choisir un sujet parmi trois propositions, puis générer le projet et le plan."
-                : "Décrire le projet, ajouter des matériaux et lancer une analyse."}
+                : "Projet, consentement, matériaux (outil + données + code), cadrage du support, puis plan de rédaction."}
             </p>
             <b>
               Commencer <i className="fa-solid fa-arrow-right" />
@@ -487,30 +929,38 @@ export default function ResearchStudio({
             className="cp-choice gate-archive"
             onClick={() => setIntent("resume")}
           >
-            <span className="cp-gate-kicker">Archive</span>
+            <span className="cp-gate-kicker">
+              {mode === "design" ? "Archive" : "Projets"}
+            </span>
             <span className="cp-icon" aria-hidden="true">
-              <i className="fa-solid fa-book-open" />
+              <i
+                className={
+                  mode === "design"
+                    ? "fa-solid fa-book-open"
+                    : "fa-solid fa-folder-tree"
+                }
+              />
             </span>
             <h3>
-              {mode === "design" ? "Propositions faites" : "Reprendre"}
+              {mode === "design" ? "Propositions faites" : "Mes projets"}
             </h3>
             <p>
               {mode === "design"
                 ? hasProposals
                   ? `${topicArchive.length} sollicitation${topicArchive.length > 1 ? "s" : ""} : sujets proposés, choix, projet et plan.`
                   : emptyArchiveMessage()
-                : resumeReady
-                  ? "Consulter le brief, les matériaux et le schéma d’analyse."
-                  : "Aucun matériau ni analyse n’est encore disponible."}
+                : withWork.length
+                  ? `${withWork.length} projet${withWork.length > 1 ? "s" : ""} avec matériaux et/ou plan, regroupés pour les distinguer.`
+                  : corpusProjects.length
+                    ? "Vos projets sont listés ici : matériaux et plans apparaîtront dès qu’ils seront déposés."
+                    : "Créez un projet personnel pour y rattacher matériaux et plans."}
             </p>
             <b>
               {mode === "design"
                 ? hasProposals
                   ? "Ouvrir l’archive"
                   : "Voir l’état"
-                : resumeReady
-                  ? "Consulter"
-                  : "Voir l’état"}{" "}
+                : "Voir mes projets"}{" "}
               <i className="fa-solid fa-arrow-right" />
             </b>
           </button>
@@ -791,8 +1241,37 @@ export default function ResearchStudio({
   }
 
   if (mode === "corpus" && intent === "resume") {
+    const corpusProjects = projects.filter((x) => !x.demo);
+    const listed = corpusProjects.length ? corpusProjects : projects;
+
+    function goToProject(projectId: string, next: "start" | "resume" | "plan") {
+      if (projectId === p.id) {
+        setIntent(next === "resume" ? "resume" : next);
+        return;
+      }
+      if (next === "start") keepCorpusStartFlow();
+      else keepCorpusProjectsFlow(next === "plan" ? "plan" : "resume");
+      selectProject(projectId);
+    }
+
+    function openMaterial(projectId: string, materialId: string) {
+      if (projectId === p.id) {
+        const m = (p.materials || []).find((x: any) => x.id === materialId);
+        if (m) open(m);
+        return;
+      }
+      try {
+        sessionStorage.setItem(OPEN_MATERIAL_KEY, materialId);
+      } catch {
+        /* ignore */
+      }
+      keepCorpusProjectsFlow("resume");
+      selectProject(projectId);
+    }
+
     return (
       <section className="cp-flow topic-flow">
+        {confirmDialog}
         <div className="topic-flow-bar">
           <button
             type="button"
@@ -802,175 +1281,466 @@ export default function ResearchStudio({
             <i className="fa-solid fa-arrow-left" aria-hidden="true" /> Parcours
           </button>
           <p className="topic-flow-context">
-            Reprendre · Organisation
-            <small>
-              {p.demo ? "Parcours d’exemple" : `${p.title}, ${p.type}`}
-            </small>
+            Mes projets
+            <small>Matériaux et plans regroupés par projet</small>
           </p>
         </div>
-        {!corpusReady ? (
+
+        <div className="cp-heading">
+          <h2>Mes projets</h2>
+          <p>
+            Ouvrez un bloc pour consulter le cadrage, les matériaux et le plan
+            d’un projet. Les titres sont colorés pour les distinguer.
+          </p>
+        </div>
+
+        {msg && (
+          <p role="status" className="cp-message">
+            {msg}
+          </p>
+        )}
+
+        {!listed.length ? (
           <section className="cp-card">
-            <h3>Rien à consulter pour l’instant</h3>
+            <h3>Aucun projet pour l’instant</h3>
             <p>
-              Aucun brief, matériau ou schéma d’analyse n’est encore disponible
-              sur ce projet.
+              Créez un projet personnel, puis déposez vos matériaux et demandez
+              un plan de rédaction.
             </p>
             <div className="cp-actions">
-              <button className="primary" onClick={() => setIntent("start")}>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  setFreshStart(true);
+                  setIntent("start");
+                }}
+              >
                 Démarrer <i className="fa-solid fa-arrow-right" />
               </button>
             </div>
           </section>
         ) : (
-          <>
-            {(draft.brief || draft.briefName) && (
-              <section className="cp-card">
-                <div className="panelhead">
-                  <h3>Brief du projet</h3>
-                  <button
-                    type="button"
-                    className="textbtn"
-                    onClick={() => setIntent("start")}
+          <div className="corpus-projects">
+            {listed.map((project, index) => {
+              const materials = project.materials || [];
+              const frame = project.frame || {};
+              const frameLabel = [
+                frame.documentType &&
+                  documentTypeLabel(
+                    frame.documentType,
+                    frame.documentTypeOther,
+                  ),
+                frame.discipline &&
+                  disciplineLabel(frame.discipline, frame.disciplineOther),
+                frame.expectedLength &&
+                  expectedLengthLabel(frame.expectedLength),
+                frame.writingTime && writingTimeLabel(frame.writingTime),
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              const isCurrent = project.id === p.id;
+              const isOpen = corpusProjectOpen(project.id, index);
+              const titleColor =
+                PROJECT_TITLE_COLORS[index % PROJECT_TITLE_COLORS.length];
+
+              return (
+                <section
+                  key={project.id}
+                  className={
+                    "cp-card corpus-project-block" +
+                    (isCurrent ? " is-current" : "") +
+                    (isOpen ? " is-open" : "")
+                  }
+                  style={{ ["--project-title" as string]: titleColor }}
+                >
+                  <div className="corpus-project-head">
+                    <button
+                      type="button"
+                      className="corpus-project-toggle"
+                      aria-expanded={isOpen}
+                      onClick={() => toggleCorpusProject(project.id, index)}
+                    >
+                      <span>
+                        <h3>{project.title}</h3>
+                        <small>
+                          {project.type}
+                          {project.demo ? " · Exemple" : ""}
+                          {isCurrent ? " · Projet ouvert" : ""}
+                          {" · "}
+                          {materials.length}{" "}
+                          {materials.length > 1 ? "matériaux" : "matériau"}
+                          {project.plan ? " · Plan disponible" : ""}
+                        </small>
+                      </span>
+                      <i
+                        className={
+                          "fa-solid " +
+                          (isOpen ? "fa-chevron-up" : "fa-chevron-down")
+                        }
+                        aria-hidden="true"
+                      />
+                    </button>
+                    <div className="corpus-project-head-actions">
+                      {!isCurrent && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => goToProject(project.id, "resume")}
+                        >
+                          Ouvrir
+                        </button>
+                      )}
+                      {!project.demo && (
+                        <button
+                          type="button"
+                          className="secondary corpus-project-delete"
+                          disabled={busy}
+                          onClick={() =>
+                            void removeCorpusProject(
+                              project.id,
+                              project.title,
+                            )
+                          }
+                        >
+                          <i
+                            className="fa-solid fa-trash-can"
+                            aria-hidden="true"
+                          />{" "}
+                          Supprimer
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div
+                    className={
+                      "corpus-project-collapse" + (isOpen ? " is-open" : "")
+                    }
                   >
-                    Modifier
-                  </button>
-                </div>
-                {draft.briefName && <p>
-                  <strong>{draft.briefName}</strong>
-                </p>}
-                {draft.brief && <p>{draft.brief}</p>}
-                {draft.briefFile && (
-                  <a href={"/api/workspace?file=" + draft.briefFile}>
-                    Ouvrir le projet déposé
-                  </a>
-                )}
-              </section>
-            )}
-            <section className="cp-card">
-              <div className="panelhead">
-                <h3>Matériaux</h3>
-                <button type="button" className="textbtn" onClick={add}>
-                  Ajouter
-                </button>
-              </div>
-              {p.materials.length ? (
-                p.materials.map((m: any) => (
-                  <button
-                    className="listrow"
-                    key={m.id}
-                    onClick={() => open(m)}
-                  >
-                    <i className="fa-solid fa-file-lines" aria-hidden="true" />
-                    <span>
-                      {m.title}
-                      <small>
-                        {materialCode(m)} · {m.type}
-                      </small>
-                    </span>
-                    <span className="pill">
-                      {materialText(m).trim()
-                        ? "Texte disponible"
-                        : "À documenter"}
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <p>Aucun matériau pour l’instant.</p>
-              )}
-            </section>
-            {result ? (
-              <section className="cp-card proposal">
-                <small>
-                  Proposition du {new Date(result.date).toLocaleString("fr-FR")}{" "}
-                  · {result.model}
-                </small>
-                <h2>Schéma d’analyse</h2>
-                {result.sections.map((s: any, i: number) => (
-                  <article key={i}>
-                    <h3>{s.title}</h3>
-                    <p>{s.advice}</p>
-                    {s.evidence.map((v: any, j: number) => {
-                      const m = p.materials.find((x: any) => x.id === v.id);
-                      return (
-                        <blockquote key={j}>
-                          « {v.quote} »
-                          {m && (
+                    <div className="corpus-project-collapse-inner">
+                      <div className="corpus-project-section">
+                        <div className="panelhead">
+                          <h4>Cadrage</h4>
+                          {isCurrent && (
                             <button
-                              className="textbtn"
-                              onClick={() => read({ m, quote: v.quote })}
+                              type="button"
+                              className="secondary corpus-section-action"
+                              disabled={busy}
+                              onClick={() => void openCorpusEditor("frame")}
                             >
-                              {materialCode(m)} · {m.title}{" "}
-                              <i className="fa-solid fa-up-right-from-square" />
+                              <i
+                                className="fa-solid fa-pen-to-square"
+                                aria-hidden="true"
+                              />{" "}
+                              Modifier
                             </button>
                           )}
-                        </blockquote>
-                      );
-                    })}
-                  </article>
-                ))}
-                {result.gaps?.length > 0 && (
-                  <>
-                    <h3>Points à vérifier</h3>
-                    <ul>
-                      {result.gaps.map((g: string) => (
-                        <li key={g}>{g}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-                <div className="cp-actions">
-                  <button
-                    className="secondary"
-                    onClick={() => setIntent("start")}
-                  >
-                    Relancer une analyse
-                  </button>
-                </div>
-              </section>
-            ) : (
-              <section className="cp-card">
-                <h3>Pas encore de schéma d’analyse</h3>
-                <p>
-                  Les matériaux sont prêts à être croisés. Passez en mode
-                  démarrage pour lancer une analyse.
-                </p>
-                <div className="cp-actions">
-                  <button className="primary" onClick={() => setIntent("start")}>
-                    Analyser <i className="fa-solid fa-arrow-right" />
-                  </button>
-                </div>
-              </section>
-            )}
-          </>
-        )}
-        {reading && (
-          <div className="overlay">
-            <div
-              className="dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Passage source"
-            >
-              <div className="dialoghead">
-                <h2>{reading.m.title}</h2>
-                <button onClick={() => read(null)}>Fermer</button>
-              </div>
-              <small>
-                {materialCode(reading.m)} · {reading.m.source}
-              </small>
-              <SourcePassage
-                text={materialText(reading.m)}
-                quote={reading.quote}
-              />
-              {reading.m.file && (
-                <a href={"/api/workspace?file=" + reading.m.file}>
-                  Télécharger le fichier original
-                </a>
-              )}
-            </div>
+                        </div>
+                        {frameLabel || frame.brief ? (
+                          <>
+                            {frameLabel && <p>{frameLabel}</p>}
+                            {frame.brief && (
+                              <p
+                                className="corpus-project-brief"
+                                title={frame.brief}
+                              >
+                                {previewBrief(frame.brief)}
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="corpus-project-empty">
+                            Pas encore de cadrage sur ce projet.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="corpus-project-section">
+                        <div className="panelhead">
+                          <h4>
+                            Matériaux
+                            {materials.length ? ` · ${materials.length}` : ""}
+                          </h4>
+                          {isCurrent && (
+                            <div className="corpus-section-actions">
+                              <button
+                                type="button"
+                                className="secondary corpus-section-action"
+                                disabled={busy}
+                                onClick={() => void openCorpusEditor("materials")}
+                              >
+                                <i
+                                  className="fa-solid fa-folder-open"
+                                  aria-hidden="true"
+                                />{" "}
+                                Gérer
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary corpus-section-action"
+                                disabled={busy}
+                                onClick={add}
+                              >
+                                <i
+                                  className="fa-solid fa-plus"
+                                  aria-hidden="true"
+                                />{" "}
+                                Ajouter
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        {materials.length ? (
+                          <div className="corpus-project-materials">
+                            {materials.map((m) => (
+                              <button
+                                type="button"
+                                className="listrow"
+                                key={m.id}
+                                onClick={() =>
+                                  openMaterial(project.id, m.id)
+                                }
+                              >
+                                <i
+                                  className="fa-solid fa-file-lines"
+                                  aria-hidden="true"
+                                />
+                                <span>
+                                  {m.title}
+                                  <small>
+                                    {materialCode(m)} · {m.type}
+                                  </small>
+                                </span>
+                                <span className="pill">
+                                  {m.hasText
+                                    ? "Texte disponible"
+                                    : "À documenter"}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="corpus-project-empty">
+                            Aucun matériau déposé.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="corpus-project-section">
+                        <div className="panelhead">
+                          <h4>Plan de rédaction</h4>
+                        </div>
+                        {project.plan ? (
+                          <>
+                            <p>
+                              {project.plan.simulated
+                                ? "Aperçu simulé"
+                                : "Plan"}{" "}
+                              du{" "}
+                              {project.plan.date
+                                ? new Date(project.plan.date).toLocaleString(
+                                    "fr-FR",
+                                  )
+                                : "—"}
+                              {project.plan.sections
+                                ? ` · ${project.plan.sections} section${
+                                    project.plan.sections > 1 ? "s" : ""
+                                  }`
+                                : ""}
+                              {project.plan.model
+                                ? ` · ${project.plan.model}`
+                                : ""}
+                            </p>
+                            <div className="cp-actions">
+                              <button
+                                type="button"
+                                className="primary"
+                                onClick={() =>
+                                  goToProject(project.id, "plan")
+                                }
+                              >
+                                Ouvrir le plan{" "}
+                                <i className="fa-solid fa-arrow-right" />
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={
+                                  busy ||
+                                  !(
+                                    project.plan?.data?.sections?.length ||
+                                    (project.id === p.id &&
+                                      (draft.corpusResult || result)
+                                        ?.sections?.length)
+                                  )
+                                }
+                                onClick={() =>
+                                  void downloadProjectDoc(project, "plan")
+                                }
+                              >
+                                <i
+                                  className="fa-solid fa-file-word"
+                                  aria-hidden="true"
+                                />{" "}
+                                Plan rédaction
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={busy}
+                                onClick={() =>
+                                  void downloadProjectDoc(project, "schedule")
+                                }
+                              >
+                                <i
+                                  className="fa-solid fa-file-word"
+                                  aria-hidden="true"
+                                />{" "}
+                                Planning
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() =>
+                                  void openCorpusEditor("plan", project.id)
+                                }
+                              >
+                                Relancer
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="corpus-project-empty">
+                              Pas encore de plan sur ce projet.
+                            </p>
+                            <div className="cp-actions">
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() =>
+                                  void openCorpusEditor("plan", project.id)
+                                }
+                              >
+                                Demander un plan{" "}
+                                <i className="fa-solid fa-arrow-right" />
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
+
+        <div className="cp-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              setCorpusEntryStep(null);
+              setFreshStart(true);
+              setIntent("start");
+            }}
+          >
+            Nouveau dépôt <i className="fa-solid fa-arrow-right" />
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={createProject}
+          >
+            Créer un projet
+          </button>
+        </div>
       </section>
+    );
+  }
+
+  async function regeneratePlan(feedback: string) {
+    if (busy || !mode || mode !== "corpus") return;
+    if (p.demo) {
+      notice("Choisissez un projet personnel pour regénérer un plan.");
+      return;
+    }
+    wait(true);
+    notice("");
+    try {
+      const prepared = {
+        ...draft,
+        corpusProjectConfirmed: true,
+        corpusNoticeAccepted: true,
+        corpusAiAccepted: true,
+        corpusPrivacyAccepted: true,
+      };
+      set(prepared);
+      await persistDraft(prepared);
+      agree(true);
+      const previousPlan = (result?.sections || []).map((s: any) => ({
+        title: s.title,
+        advice: s.advice,
+      }));
+      const response = await fetch("/api/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: p.id,
+          mode: "corpus",
+          consent: true,
+          simulate: simulatePlan,
+          publicQuery: "",
+          revisionFeedback: feedback,
+          previousPlan,
+        }),
+      });
+      const nextResult = (await response.json()) as any;
+      if (!response.ok) throw Error(nextResult.error);
+      const next = {
+        ...prepared,
+        corpusResult: {
+          ...nextResult,
+          revisionFeedback: feedback,
+        },
+      };
+      set(next);
+      await save(next);
+      notice(
+        nextResult.simulated
+          ? "Aperçu révisé enregistré (simulation)."
+          : "Plan révisé enregistré. Vérifiez les sections avant de les retenir.",
+      );
+    } catch (e: any) {
+      notice(e.message || "Regénération impossible.");
+      throw e;
+    } finally {
+      wait(false);
+    }
+  }
+
+  if (mode === "corpus" && intent === "plan" && result) {
+    return (
+      <>
+        <WritingPlanView
+          p={p}
+          draft={draft}
+          result={result}
+          busy={busy}
+          onBack={() => setIntent("resume")}
+          onOpenPassage={(payload) => read(payload)}
+          onRegenerate={regeneratePlan}
+        />
+        {reading && (
+          <SourcePassageDialog
+            reading={reading}
+            onClose={() => read(null)}
+          />
+        )}
+      </>
     );
   }
 
@@ -1053,259 +1823,46 @@ export default function ResearchStudio({
   }
 
   return (
-    <section className="cp-flow topic-flow">
-      <div className="topic-flow-bar">
-        <button
-          type="button"
-          className="secondary topic-back"
-          disabled={busy}
-          onClick={() => setIntent("gate")}
-        >
-          <i className="fa-solid fa-arrow-left" aria-hidden="true" /> Parcours
-        </button>
-        <p className="topic-flow-context">
-          Organiser mon manuscrit
-          <small>
-            {p.demo ? "Nouveau parcours" : `${p.title}, ${p.type}`}
-          </small>
-        </p>
-      </div>
-      <section className="cp-card form-cp">
-        <label>
-          Décrivez votre projet de recherche
-          <textarea
-            rows={4}
-            maxLength={30000}
-            value={draft.brief || ""}
-            placeholder="Question de départ, terrain, période et objectif du manuscrit…"
-            onChange={(e) => update("brief", e.target.value)}
-          />
-        </label>
-        <label className="import-cp">
-          <i className="fa-solid fa-file-import" aria-hidden="true" />
-          {draft.briefName || "Importer le texte d’un projet"}
-          <input
-            type="file"
-            accept=".pdf,.docx,.txt,.md"
-            onChange={(e) => importBrief(e.target.files?.[0])}
-          />
-        </label>
-        {draft.briefFile && (
-          <a href={"/api/workspace?file=" + draft.briefFile}>
-            Ouvrir le projet déposé
-          </a>
-        )}
-        <div className="panelhead">
-          <h3>Matériaux du projet</h3>
-          <button className="textbtn" onClick={add}>
-            Ajouter un matériau
-          </button>
-        </div>
-        {p.materials.length ? (
-          <>
-            <p>
-              Choisissez les fiches à croiser dans cette analyse (120 000
-              caractères par lot).
-            </p>
-            {p.materials.map((m: any) => (
-              <div className="source-choice" key={m.id}>
-                <input
-                  aria-label={"Inclure " + m.title}
-                  type="checkbox"
-                  checked={!(draft.excluded || []).includes(m.id)}
-                  onChange={(e) =>
-                    update(
-                      "excluded",
-                      e.target.checked
-                        ? (draft.excluded || []).filter(
-                            (id: string) => id !== m.id,
-                          )
-                        : [...(draft.excluded || []), m.id],
-                    )
-                  }
-                />
-                <button className="listrow" onClick={() => open(m)}>
-                  <i className="fa-solid fa-file-lines" aria-hidden="true" />
-                  <span>
-                    {m.title}
-                    <small>
-                      {materialCode(m)} · {m.type}
-                    </small>
-                  </span>
-                  <span className="pill">
-                    {materialText(m).trim()
-                      ? "Texte disponible"
-                      : "À documenter"}
-                  </span>
-                </button>
-              </div>
-            ))}
-          </>
-        ) : (
-          <p>
-            Ajoutez un premier entretien, une observation, une référence ou un
-            tableau.
-          </p>
-        )}
-      </section>
-      {mode === "corpus" && (
-        <section className="cp-card form-cp">
-          <h3>Demander un schéma d’analyse</h3>
-          <p>
-            La proposition doit être remaniée par vos soins. Les références
-            externes et les extraits du corpus sont présentés séparément.
-          </p>
-          <label className="inline-check">
-            <input
-              type="checkbox"
-              checked={external}
-              onChange={(e) => search(e.target.checked)}
-            />{" "}
-            Rechercher aussi des références dans Crossref
-          </label>
-          {external && (
-            <label>
-              Mots-clés publics envoyés à Crossref
-              <input
-                maxLength={180}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Ex. usages numériques étudiants"
-              />
-            </label>
-          )}
-          <Attestation analysis checked={consent} onChange={agree} />
-          <div className="cp-actions">
-            <button
-              className="secondary"
-              disabled={!consent || busy || !ready}
-              onClick={() => persist(false)}
-            >
-              Enregistrer le cadrage
-            </button>
-            <button
-              className="primary"
-              disabled={
-                !consent || busy || !ready || (external && !query.trim())
-              }
-              onClick={() => persist(true)}
-            >
-              {busy ? "Traitement en cours…" : "Analyser avec l’IA"}{" "}
-              <i className="fa-solid fa-arrow-right" />
-            </button>
-          </div>
-        </section>
-      )}
-      {mode === "corpus" && msg && (
-        <p role="status" className="cp-message">
-          {msg}
-        </p>
-      )}
-      {mode === "corpus" && result && (
-        <section className="cp-card proposal">
-          <small>
-            Proposition du {new Date(result.date).toLocaleString("fr-FR")} ·{" "}
-            {result.model}
-          </small>
-          <h2>Schéma d’analyse</h2>
-          {result.sections.map((s: any, i: number) => (
-            <article key={i}>
-              <h3>{s.title}</h3>
-              <p>{s.advice}</p>
-              {s.evidence.map((v: any, j: number) => {
-                const m = p.materials.find((x: any) => x.id === v.id);
-                return (
-                  <blockquote key={j}>
-                    « {v.quote} »
-                    {m && (
-                      <button
-                        className="textbtn"
-                        onClick={() => read({ m, quote: v.quote })}
-                      >
-                        {materialCode(m)} · {m.title}{" "}
-                        <i className="fa-solid fa-up-right-from-square" />
-                      </button>
-                    )}
-                  </blockquote>
-                );
-              })}
-            </article>
-          ))}
-          {result.gaps.length > 0 && (
-            <>
-              <h3>Points à vérifier</h3>
-              <ul>
-                {result.gaps.map((g: string) => (
-                  <li key={g}>{g}</li>
-                ))}
-              </ul>
-            </>
-          )}
-          <h3>Références externes repérées</h3>
-          {result.references.length ? (
-            result.references.map((r: any) => (
-              <p key={r.url}>
-                <a href={r.url} target="_blank" rel="noreferrer">
-                  {r.title}
-                </a>
-                {r.comparison && (
-                  <span className="ref-comparison">
-                    <b>{r.comparison.relation} à vérifier</b>
-                    <br />
-                    Résumé publié · « {r.comparison.passage} »<br />
-                    Corpus · « {r.comparison.evidence.quote} »
-                  </span>
-                )}
-              </p>
-            ))
-          ) : (
-            <p>Aucune référence externe mobilisée.</p>
-          )}
-          <small>
-            Empreinte {result.fingerprint} · {result.version}
-          </small>
-        </section>
-      )}
-      {reading && (
-        <div className="overlay">
-          <div
-            className="dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Passage source"
-          >
-            <div className="dialoghead">
-              <h2>{reading.m.title}</h2>
-              <button onClick={() => read(null)}>Fermer</button>
-            </div>
-            <small>
-              {materialCode(reading.m)} · {reading.m.source}
-            </small>
-            <SourcePassage
-              text={materialText(reading.m)}
-              quote={reading.quote}
-            />
-            {reading.m.file && (
-              <a href={"/api/workspace?file=" + reading.m.file}>
-                Télécharger le fichier original
-              </a>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function SourcePassage({ text, quote }: { text: string; quote: string }) {
-  const index = text.indexOf(quote);
-  return index < 0 ? (
-    <p>La fiche a changé depuis cette analyse. Vérifiez la version citée.</p>
-  ) : (
-    <p className="source-passage">
-      {text.slice(Math.max(0, index - 500), index)}
-      <mark>{quote}</mark>
-      {text.slice(index + quote.length, index + quote.length + 500)}
-    </p>
+    <>
+      {confirmDialog}
+      <CorpusOrganizer
+        p={p}
+        projects={projects}
+        draft={draft}
+        update={update}
+        busy={busy}
+        ready={ready}
+        msg={msg}
+        consent={consent}
+        agree={agree}
+        external={external}
+        search={search}
+        simulatePlan={simulatePlan}
+        setSimulatePlan={setSimulatePlan}
+        query={query}
+        setQuery={setQuery}
+        persist={persist}
+        add={add}
+        open={open}
+        createProject={createProject}
+        selectProject={selectProject}
+        initialStep={corpusEntryStep}
+        onBack={() => {
+          setCorpusEntryStep(null);
+          setIntent("gate");
+        }}
+        goPrivacy={() => go("Politique de confidentialité")}
+        onAbandon={() => void abandonCorpusStart()}
+        onPlanReady={async () => {
+          try {
+            await resetCorpusStart(false);
+          } catch {
+            /* le plan est déjà enregistré */
+          }
+          setCorpusEntryStep(null);
+          setIntent("plan");
+        }}
+      />
+    </>
   );
 }

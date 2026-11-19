@@ -11,6 +11,7 @@ export type ProjectTypeId =
   | "internship"
   | "thesis"
   | "article"
+  | "book"
   | "talk"
   | "research_dossier"
   | "reading_sheet"
@@ -31,6 +32,7 @@ export const PROJECT_TYPE_LABELS: Record<ProjectTypeId, string> = {
   internship: "Rapport de stage",
   thesis: "Thèse",
   article: "Article scientifique",
+  book: "Livre",
   talk: "Communication", // conservé pour archives anciennes
   research_dossier: "Dossier de recherche",
   reading_sheet: "Fiche de lecture",
@@ -44,6 +46,8 @@ export function mainDocumentLabel(projectType: ProjectTypeId): string {
       return "Projet de rapport de stage";
     case "article":
       return "Projet d’article";
+    case "book":
+      return "Projet de livre";
     case "talk":
       return "Projet de communication";
     case "thesis":
@@ -435,6 +439,44 @@ const PROJECT_OUTLINES: Record<ProjectTypeId, DocumentOutline["sections"]> = {
       intent: "Répartir lecture, prises de notes et rédaction selon le délai.",
     },
   ],
+  book: [
+    {
+      id: "context",
+      heading: "Objet et lectorat du livre",
+      intent:
+        "Clarifier le sujet, le public visé et la promesse du manuscrit sans rédiger le livre.",
+    },
+    {
+      id: "problem",
+      heading: "Fil conducteur et question directrice",
+      intent:
+        "Formuler l’argument central et ce que chaque partie doit démontrer.",
+    },
+    {
+      id: "theory",
+      heading: "Repères, corpus et références",
+      intent:
+        "Organiser les matériaux et lectures qui nourriront les chapitres.",
+    },
+    {
+      id: "method",
+      heading: "Architecture du livre",
+      intent:
+        "Proposer une progression de chapitres du simple au complexe, réaliste pour le volume.",
+    },
+    {
+      id: "analysis",
+      heading: "Développements et preuves",
+      intent:
+        "Indiquer comment mobiliser les matériaux dans les chapitres principaux.",
+    },
+    {
+      id: "schedule",
+      heading: "Calendrier de rédaction",
+      intent:
+        "Répartir rédaction, relectures et finalisation jusqu’au rendu déclaré.",
+    },
+  ],
   other: [
     {
       id: "context",
@@ -509,6 +551,7 @@ const PLAN_OUTLINES: Record<ProjectTypeId, DocumentOutline["sections"]> = {
   internship: PLAN_BASE,
   thesis: PLAN_BASE,
   article: PLAN_BASE,
+  book: PLAN_BASE,
   talk: PLAN_BASE,
   research_dossier: PLAN_BASE,
   reading_sheet: PLAN_BASE,

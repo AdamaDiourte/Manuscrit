@@ -32,21 +32,41 @@ export const questions = [
 ] as const;
 export function materialCode(m: { id: string; type: string }) {
   const prefixes: Record<string, string> = {
+    "Grille d’entretien": "GRI",
+    Questionnaire: "QST",
+    "Grille d’observation": "GOB",
+    "Autre outil": "OUT",
+    Aucun: "AUC",
+    "Entretien réalisé": "ENT",
+    "Réponses au questionnaire": "REP",
+    "Notes d’observation": "OBS",
+    "Notes de lecture bibliographiques": "LEC",
+    "Archives/données secondaires": "ARC",
+    "Cartes / SIG": "MAP",
+    Autres: "AUT",
+    // Anciens libellés (fiches déjà enregistrées)
     Entretien: "ENT",
     Archive: "ARC",
     Observation: "OBS",
-    Questionnaire: "QST",
     "Référence bibliographique": "BIB",
     "Analyse statistique": "STA",
+    "Tableau statistique": "TAB",
     Graphique: "FIG",
+    Carte: "MAP",
     "Note de lecture": "LEC",
+    "Données empiriques": "EMP",
+    Résultat: "RES",
+    Document: "DOC",
+    Note: "NOT",
   };
   return (prefixes[m.type] || "MAT") + "-" + m.id.slice(0, 8).toUpperCase();
 }
 export function materialText(m: any) {
   return [
+    m.observation,
     m.text,
     m.extracted,
+    m.toolExtracted,
     ...Object.entries(m.extra || {})
       .filter(([, v]) => typeof v === "string" && v)
       .map(([k, v]) => k + " — " + v),

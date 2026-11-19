@@ -21,36 +21,113 @@ export const templates: Record<string, string[]> = {
     "Synthèse et limites",
   ],
   Article: ["Introduction", "Méthode", "Résultats", "Discussion et conclusion"],
-};
-export const types: Record<string, string[]> = {
-  Archive: ["Fonds et cote", "Date du document"],
-  Observation: ["Lieu et contexte", "Date de l’observation"],
-  "Note de lecture": ["Référence lue", "Passage et pagination"],
-  Graphique: ["Variables et unités", "Données ou description accessible"],
-  "Tableau statistique": ["Champ et dénominateur", "Unités et lecture"],
-  Entretien: ["Code de l’entretien", "Date et contexte", "Extraits"],
-  Questionnaire: ["Population", "Questions et modalités", "Nombre de réponses"],
-  "Données empiriques": [
-    "Terrain",
-    "Unité d’observation",
-    "Conditions de collecte",
+  Livre: [
+    "Ouverture et promesse",
+    "Fil conducteur",
+    "Chapitres de développement",
+    "Synthèse et conclusion",
   ],
-  "Analyse statistique": ["Variables", "Méthode", "Effectif et limites"],
-  "Référence bibliographique": ["Auteur", "Année", "Référence complète ou DOI"],
-  Résultat: ["Constat", "Éléments de preuve", "Limites"],
-  Note: ["Observation"],
-  Document: ["Description"],
+  Autre: [
+    "Introduction",
+    "Cadre et méthode",
+    "Analyse",
+    "Discussion et conclusion",
+  ],
 };
-export function makeProject(title: string, person: string, type: string) {
+
+/** Options du menu « type / modèle de projet » (ordre d’affichage). */
+export const PROJECT_MODEL_OPTIONS = [
+  { value: "Mémoire", label: "Mémoire" },
+  { value: "Thèse", label: "Thèse" },
+  { value: "Rapport d’enquête", label: "Rapport d’enquête" },
+  { value: "Article", label: "Article" },
+  { value: "Livre", label: "Livre" },
+  { value: "Autre", label: "Autre" },
+] as const;
+
+export function projectTypeLabel(project: {
+  type?: string;
+  typeOther?: string;
+}) {
+  if (project.type === "Autre" && project.typeOther?.trim())
+    return `Autre — ${project.typeOther.trim()}`;
+  return project.type || "";
+}
+
+export type MaterialKind = "outil" | "materiau";
+
+/** Fiches : outils de recueil vs matériaux effectivement recueillis. */
+export const MATERIAL_ENTRIES: {
+  type: string;
+  kind: MaterialKind;
+  prefix: string;
+}[] = [
+  { type: "Grille d’entretien", kind: "outil", prefix: "GRI" },
+  { type: "Questionnaire", kind: "outil", prefix: "QST" },
+  { type: "Grille d’observation", kind: "outil", prefix: "GOB" },
+  { type: "Autre outil", kind: "outil", prefix: "OUT" },
+  { type: "Entretien réalisé", kind: "materiau", prefix: "ENT" },
+  { type: "Réponses au questionnaire", kind: "materiau", prefix: "REP" },
+  { type: "Notes d’observation", kind: "materiau", prefix: "OBS" },
+  {
+    type: "Notes de lecture bibliographiques",
+    kind: "materiau",
+    prefix: "LEC",
+  },
+  { type: "Archives/données secondaires", kind: "materiau", prefix: "ARC" },
+  { type: "Cartes / SIG", kind: "materiau", prefix: "MAP" },
+  { type: "Autres", kind: "materiau", prefix: "AUT" },
+];
+
+export const TOOL_TYPE_OPTIONS = [
+  { value: "Aucun", label: "Aucun" },
+  ...MATERIAL_ENTRIES.filter((e) => e.kind === "outil").map((e) => ({
+    value: e.type,
+    label: e.type,
+  })),
+];
+
+export const DATA_TYPE_OPTIONS = MATERIAL_ENTRIES.filter(
+  (e) => e.kind === "materiau",
+).map((e) => ({ value: e.type, label: e.type }));
+
+export const MATERIAL_TYPES = MATERIAL_ENTRIES.map((e) => e.type);
+
+export function isNoTool(toolType?: string) {
+  return !toolType || toolType === "Aucun";
+}
+
+export function materialKind(type?: string): MaterialKind {
+  return (
+    MATERIAL_ENTRIES.find((e) => e.type === type)?.kind ||
+    (type === "Autre outil" ? "outil" : "materiau")
+  );
+}
+
+export function materialPrefix(type?: string): string {
+  return MATERIAL_ENTRIES.find((e) => e.type === type)?.prefix || "MAT";
+}
+
+/** @deprecated Conservé pour compatibilité ; préférer MATERIAL_TYPES. */
+export const types: Record<string, string[]> = Object.fromEntries(
+  MATERIAL_TYPES.map((t) => [t, [] as string[]]),
+);
+export function makeProject(
+  title: string,
+  type: string,
+  typeOther = "",
+) {
+  const outline = templates[type] || templates.Autre;
   return {
     id: crypto.randomUUID(),
     title,
-    person,
+    person: "",
     type,
+    typeOther: type === "Autre" ? typeOther.trim() : "",
     demo: false,
-    chapters: templates[type].map((title, i) => ({
+    chapters: outline.map((chapterTitle, i) => ({
       id: "c" + i,
-      title,
+      title: chapterTitle,
       progress: 0,
       text: "",
       kind: "Section rédigée",
@@ -80,31 +157,32 @@ export const demo: any = {
     sections: [],
   })),
   materials: [
-    "Guide d’entretien semi-directif",
-    "Notes d’observation sur le campus",
-    "Questionnaire sur les usages numériques",
-    "Grille de codage thématique",
-    "Corpus des entretiens",
-    "Bibliographie de travail",
-    "Journal de terrain",
-    "Tableau des réponses",
-  ].map((title, i) => ({
+    {
+      title: "Entretien E01 — campus",
+      toolType: "Grille d’entretien",
+      type: "Entretien réalisé",
+    },
+    {
+      title: "Questionnaire usages — vague 1",
+      toolType: "Questionnaire",
+      type: "Réponses au questionnaire",
+    },
+    {
+      title: "Observation campus — séance 1",
+      toolType: "Grille d’observation",
+      type: "Notes d’observation",
+    },
+    {
+      title: "Notes de lecture — usages numériques",
+      toolType: "Autre outil",
+      type: "Notes de lecture bibliographiques",
+      toolUnavailable: true,
+    },
+  ].map((item, i) => ({
     id: "m" + i,
-    title,
-    type: [
-      "Entretien",
-      "Note",
-      "Questionnaire",
-      "Document",
-      "Données empiriques",
-      "Référence bibliographique",
-      "Note",
-      "Analyse statistique",
-    ][i],
-    theme: ["Usages numériques", "Vie étudiante"][i % 2],
-    source: "",
-    chapter: "c" + (i % 4),
-    status: i % 3 === 0 ? "À vérifier" : "Classé",
+    ...item,
+    toolUnavailable: Boolean(item.toolUnavailable),
+    observation: "",
     extra: {},
     text: "",
   })),

@@ -3,10 +3,16 @@ import {
   normalizeProjectType,
   type DocumentKind,
 } from "../../../../shared/research/documentStructures";
+import { writingStructureFor } from "../../../../shared/research/corpusOrganization";
 import type {
   GeneratedTopic,
   TopicDocument,
 } from "../../../../shared/research/topicTypes";
+import {
+  buildWorkPlanFromTopic,
+  joinSentences,
+  workPlanToScheduleTable,
+} from "../../../../shared/research/workPlan";
 import { buildPseudonymizedProfile } from "../privacy/buildPseudonymizedProfile";
 import { chatCompletion } from "../llm/client";
 import {
@@ -37,6 +43,54 @@ function alignDocument(
     kind,
     projectType,
     sections,
+  };
+}
+
+/** Ajoute `workPlan` et aligne la table schedule sans casser les autres sections. */
+function withTopicWorkPlan(
+  document: TopicDocument,
+  answers: Record<string, unknown>,
+  topic: GeneratedTopic,
+  kind: DocumentKind,
+): TopicDocument {
+  if (kind !== "work_plan") return document;
+  if (document.workPlan?.phases?.length) {
+    const schedule = document.sections.find((s) => s.id === "schedule");
+    if (schedule?.table?.rows && schedule.table.rows.length >= 3) return document;
+  }
+  const projectType = normalizeProjectType(
+    answers.project_type || document.projectType,
+  );
+  const workPlan =
+    document.workPlan?.phases?.length
+      ? document.workPlan
+      : buildWorkPlanFromTopic({
+          answers: { ...answers, project_type: projectType },
+          topic,
+          sections: writingStructureFor(projectType),
+        });
+  if (!workPlan) return document;
+  const table = workPlanToScheduleTable(workPlan);
+  return {
+    ...document,
+    workPlan,
+    sections: document.sections.map((section) => {
+      if (section.id !== "schedule") return section;
+      return {
+        ...section,
+        paragraphs:
+          section.paragraphs?.length
+            ? section.paragraphs
+            : [
+                joinSentences(
+                  `Planning proposé (${workPlan.meta.durationLabel}, ${workPlan.meta.weeklyLabel})`,
+                  "Ajustez les dates exactes avec votre encadrement",
+                  "Ce calendrier est indicatif",
+                ),
+              ],
+        table,
+      };
+    }),
   };
 }
 
@@ -96,11 +150,11 @@ export async function generateTopicDocument(input: {
         timeoutMs: 180000,
       });
       const parsed = parseTopicDocument(result.content);
-      const aligned = alignDocument(
-        parsed,
-        outlineIds,
+      const aligned = withTopicWorkPlan(
+        alignDocument(parsed, outlineIds, input.kind, projectType),
+        input.answers,
+        input.topic,
         input.kind,
-        projectType,
       );
       assertDocumentDensity(aligned);
       return { document: aligned, model: result.model };
@@ -116,6 +170,13 @@ export async function generateTopicDocument(input: {
       model = second.model;
     }
   }
+
+  document = withTopicWorkPlan(
+    document,
+    input.answers,
+    input.topic,
+    input.kind,
+  );
 
   const file = await buildTopicDocx(document);
   return {

@@ -5,6 +5,7 @@ import type {
   RegenReason,
   TopicAxis,
   TopicConsents,
+  TopicDocument,
 } from "../../../../shared/research/topicTypes";
 import { REGEN_REASON_LABELS } from "../../../../shared/research/topicTypes";
 import {
@@ -12,7 +13,13 @@ import {
   mainDocumentLabel,
   normalizeProjectType,
 } from "../../../../shared/research/documentStructures";
+import { writingStructureFor } from "../../../../shared/research/corpusOrganization";
+import {
+  buildWorkPlanFromTopic,
+  type WorkPlan,
+} from "../../../../shared/research/workPlan";
 import { downloadBase64File } from "./downloadDocx";
+import WorkPlanView from "../copilot/WorkPlanView";
 
 const AXIS_LABEL: Record<TopicAxis, string> = {
   mastery: "Maîtrise",
@@ -73,6 +80,7 @@ export default function TopicResults({
   >({});
   const [chosen, setChosen] = useState<GeneratedTopic | null>(null);
   const [docs, setDocs] = useState<DocFile[]>([]);
+  const [workPlanPreview, setWorkPlanPreview] = useState<WorkPlan | null>(null);
   const [pendingAxis, setPendingAxis] = useState<TopicAxis | "">("");
   const [regenAxis, setRegenAxis] = useState<TopicAxis | "">("");
 
@@ -98,11 +106,14 @@ export default function TopicResults({
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Document impossible.");
     return {
-      kind,
-      filename: data.file.filename as string,
-      mimeType: data.file.mimeType as string,
-      base64: data.file.base64 as string,
-    } satisfies DocFile;
+      file: {
+        kind,
+        filename: data.file.filename as string,
+        mimeType: data.file.mimeType as string,
+        base64: data.file.base64 as string,
+      } satisfies DocFile,
+      document: (data.document || null) as TopicDocument | null,
+    };
   }
 
   async function chooseTopic(topic: GeneratedTopic) {
@@ -114,8 +125,21 @@ export default function TopicResults({
         fetchDocument(topic, "research_project"),
         fetchDocument(topic, "work_plan"),
       ]);
-      const generated = [project, plan];
+      const generated = [project.file, plan.file];
       setDocs(generated);
+      const fromApi = plan.document?.workPlan?.phases?.length
+        ? plan.document.workPlan
+        : null;
+      setWorkPlanPreview(
+        fromApi ||
+          buildWorkPlanFromTopic({
+            answers,
+            topic,
+            sections: writingStructureFor(
+              normalizeProjectType(answers.project_type),
+            ),
+          }),
+      );
       setChosen(topic);
       if (onChooseTopic) await onChooseTopic(topic, generated);
       else scrollFormTop();
@@ -183,6 +207,12 @@ export default function TopicResults({
           ))}
         </div>
 
+        {workPlanPreview?.phases?.length ? (
+          <div className="topic-workplan-preview">
+            <WorkPlanView plan={workPlanPreview} />
+          </div>
+        ) : null}
+
         <div className="topic-nav">
           <button
             type="button"
@@ -191,6 +221,7 @@ export default function TopicResults({
             onClick={() => {
               setChosen(null);
               setDocs([]);
+              setWorkPlanPreview(null);
               scrollFormTop();
             }}
           >

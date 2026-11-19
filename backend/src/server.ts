@@ -24,6 +24,7 @@ app.use(["/api/research","/api/billing","/api/topics"],express.raw({type:()=>tru
 app.get("/api/workspace",adapter(workspace.GET,origin));
 app.post("/api/workspace",adapter(workspace.POST,origin));
 app.post("/api/research",adapter(research.POST,origin));
+app.post("/api/research/plan-docx",adapter(research.POST_planDocx,origin));
 app.get("/api/billing",adapter(billing.GET,origin));
 app.post("/api/billing",adapter(billing.POST,origin));
 app.post("/api/topics/draft",adapter(topics.POST_draft,origin));

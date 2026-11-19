@@ -37,9 +37,10 @@ const projectTypeGroups = [
     ],
   },
   {
-    label: "Article, dossier et fiche",
+    label: "Article, livre, dossier et fiche",
     options: [
       ["article", "Article scientifique"],
+      ["book", "Livre"],
       ["research_dossier", "Dossier de recherche"],
       ["reading_sheet", "Fiche de lecture"],
     ],
@@ -252,6 +253,10 @@ export const topicQuestions: Question[] = [
       { value: "short", label: "Moins de 30 pages" },
       { value: "medium", label: "30 à 80 pages" },
       { value: "long", label: "Plus de 80 pages" },
+      {
+        value: "book_volume",
+        label: "Volume livre (environ 150 pages ou plus)",
+      },
       { value: "unknown", label: "Je ne sais pas" },
     ],
     required: true,

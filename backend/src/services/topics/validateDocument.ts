@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { TopicDocument } from "../../../../shared/research/topicTypes";
+import { phaseRoleSchema } from "../../../../shared/research/workPlan";
 
 const tableSchema = z.object({
   headers: z.array(z.string().trim().min(1).max(80)).min(2).max(8),
@@ -15,6 +16,8 @@ const sectionSchema = z.object({
   paragraphs: z.array(z.string().trim().min(8).max(4000)).min(1).max(12),
   bullets: z.array(z.string().trim().min(2).max(400)).max(12).optional(),
   table: tableSchema.optional(),
+  /** Optionnel : une réponse IA sans `role` n’est jamais rejetée. */
+  role: phaseRoleSchema.optional(),
 });
 
 export const topicDocumentSchema = z.object({

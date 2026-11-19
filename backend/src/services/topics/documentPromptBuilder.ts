@@ -6,7 +6,12 @@ import {
   type DocumentOutline,
   type ProjectTypeId,
 } from "../../../../shared/research/documentStructures";
+import { writingStructureFor } from "../../../../shared/research/corpusOrganization";
 import type { GeneratedTopic } from "../../../../shared/research/topicTypes";
+import {
+  buildWorkPlanFromTopic,
+  workPlanToScheduleTable,
+} from "../../../../shared/research/workPlan";
 import { RESEARCH_DOCUMENT_SYSTEM } from "../../prompts/researchDocumentSystem";
 
 export function documentSystemPrompt(): string {
@@ -23,6 +28,19 @@ export function buildDocumentUserPrompt(input: {
 }): string {
   const kindLabel = documentKindLabel(input.kind, input.projectType);
   const mainLabel = mainDocumentLabel(input.projectType);
+
+  const workPlan =
+    input.kind === "work_plan"
+      ? buildWorkPlanFromTopic({
+          answers: {
+            ...input.fields,
+            project_type: input.projectType,
+          },
+          topic: input.topic,
+          sections: writingStructureFor(input.projectType),
+        })
+      : null;
+  const scheduleTable = workPlan ? workPlanToScheduleTable(workPlan) : null;
 
   const schemaHint =
     input.kind === "work_plan"
@@ -89,8 +107,22 @@ export function buildDocumentUserPrompt(input: {
           `Livrable à organiser : ${mainLabel} (${PROJECT_TYPE_LABELS[input.projectType]}).`,
           "Le plan doit proposer un planning d’organisation concret : découper le délai de rendu en périodes, et dimensionner la colonne Charge selon le temps à consacrer au sujet par semaine (sans dépasser ce rythme).",
           "Obligatoire : section schedule avec champ table rempli (4 à 7 lignes) — Période | Objectif | Actions | Livrable | Charge.",
+          scheduleTable
+            ? "Tableau de référence indicatif pour la section schedule (reprenez ces lignes, vous pouvez reformuler légèrement Actions ; conservez Période, Objectif, Livrable et Charge) :"
+            : "",
+          scheduleTable ? JSON.stringify(scheduleTable) : "",
+          workPlan
+            ? "Métadonnées du planning de référence (indicatif, à ajuster avec l’encadrement) :"
+            : "",
+          workPlan
+            ? JSON.stringify({
+                meta: workPlan.meta,
+                rhythm: workPlan.rhythm,
+                warnings: workPlan.warnings,
+              })
+            : "",
           "Volume : 1 à 2 pages. Style directif. Pas de reformulation du projet.",
-        ]
+        ].filter(Boolean)
       : [
           `Document demandé : ${mainLabel} pour un ${PROJECT_TYPE_LABELS[input.projectType]}.`,
           "Volume : environ 5 pages minimum, contenu substantiel.",
