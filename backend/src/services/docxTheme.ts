@@ -171,6 +171,19 @@ export function docHeading(text: string, before = 160) {
   });
 }
 
+export function docHeading2(text: string, before = 120) {
+  return new Paragraph({
+    heading: HeadingLevel.HEADING_2,
+    spacing: { before, after: 50 },
+    children: [
+      runGeorgia(text, {
+        size: Math.max(DOC_SIZES.heading - 2, DOC_SIZES.body + 2),
+        bold: true,
+      }),
+    ],
+  });
+}
+
 export function docBody(text: string, after = 100) {
   return new Paragraph({
     spacing: { after, line: 276 },

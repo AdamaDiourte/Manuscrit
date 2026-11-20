@@ -491,7 +491,8 @@ function pilotageTable(plan: WorkPlan) {
     ),
   });
 
-  const bodyRows = plan.phases.map((p, ri) => {
+  const bodyRows: TableRow[] = [];
+  plan.phases.forEach((p, ri) => {
     const zebra = ri % 2 === 1;
     const shade = zebra
       ? {
@@ -500,9 +501,14 @@ function pilotageTable(plan: WorkPlan) {
           color: DOC_COLORS.softBlue,
         }
       : undefined;
-    const cell = (children: Paragraph[], width: number) =>
+    const cell = (
+      children: Paragraph[],
+      width: number,
+      opts?: { span?: number },
+    ) =>
       new TableCell({
         width: { size: width, type: WidthType.DXA },
+        columnSpan: opts?.span,
         verticalAlign: VerticalAlignTable.CENTER,
         shading: shade,
         borders: {
@@ -524,38 +530,68 @@ function pilotageTable(plan: WorkPlan) {
         width,
       );
 
-    return new TableRow({
-      children: [
-        textCell(
-          `${p.index + 1}. ${shortPhaseTitle(p.title, 40)}`,
-          widths[0],
-        ),
-        cell(
-          [
-            new Paragraph({
-              spacing: { before: 80, after: 20 },
-              children: [
-                runCalibri(periodLabel(p), { size: DOC_SIZES.table }),
-              ],
-            }),
-            new Paragraph({
-              spacing: { after: 80 },
-              children: [
-                runCalibri(formatWeekSpan(p.weekStart, p.weekEnd), {
-                  size: DOC_SIZES.hint,
-                  color: DOC_COLORS.slate,
+    bodyRows.push(
+      new TableRow({
+        children: [
+          textCell(
+            `${p.index + 1}. ${shortPhaseTitle(p.title, 40)}`,
+            widths[0],
+          ),
+          cell(
+            [
+              new Paragraph({
+                spacing: { before: 80, after: 20 },
+                children: [
+                  runCalibri(periodLabel(p), { size: DOC_SIZES.table }),
+                ],
+              }),
+              new Paragraph({
+                spacing: { after: 80 },
+                children: [
+                  runCalibri(formatWeekSpan(p.weekStart, p.weekEnd), {
+                    size: DOC_SIZES.hint,
+                    color: DOC_COLORS.slate,
+                  }),
+                ],
+              }),
+            ],
+            widths[1],
+          ),
+          textCell(p.objective, widths[2]),
+          textCell(p.deliverable, widths[3]),
+          textCell(p.checkpoint, widths[4]),
+          textCell(formatHoursFr(p.hours), widths[5]),
+        ],
+      }),
+    );
+
+    for (const [j, sub] of (p.subsections || []).entries()) {
+      bodyRows.push(
+        new TableRow({
+          children: [
+            cell(
+              [
+                new Paragraph({
+                  spacing: { before: 60, after: 60 },
+                  indent: { left: 120 },
+                  children: [
+                    runCalibri(
+                      `${p.index + 1}.${j + 1} ${shortPhaseTitle(sub.title, 55)}`,
+                      {
+                        size: DOC_SIZES.hint,
+                        color: DOC_COLORS.slate,
+                      },
+                    ),
+                  ],
                 }),
               ],
-            }),
+              TABLE_W,
+              { span: 6 },
+            ),
           ],
-          widths[1],
-        ),
-        textCell(p.objective, widths[2]),
-        textCell(p.deliverable, widths[3]),
-        textCell(p.checkpoint, widths[4]),
-        textCell(formatHoursFr(p.hours), widths[5]),
-      ],
-    });
+        }),
+      );
+    }
   });
 
   return new Table({

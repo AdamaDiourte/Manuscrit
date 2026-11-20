@@ -1,9 +1,11 @@
 import type {ObjectStore} from "../../storage/types";
+import { unitLimitForPlan } from "../../../../shared/research/unitLimits";
 import { entitlement, type Plan } from "./stripe";
 import { BillingError, changeValue, readValue } from "./storage";
 export { BillingError } from "./storage";
 
 export const limits: Record<Plan, number> = { free: 1, plus: 20, pro: 60 };
+export { unitLimitForPlan };
 const month = () => new Date().toISOString().slice(0, 7);
 const usageKey = (prefix: string, period: string) =>
   prefix + "billing/usage/" + period;
@@ -46,4 +48,19 @@ export async function releaseAnalysis(
         ? tokens.filter((value) => value !== token)
         : tokens,
   );
+}
+
+/** Vérifie le plafond d’unités du forfait (pipeline async). */
+export async function assertUnitQuota(
+  bucket: ObjectStore,
+  prefix: string,
+  unitCount: number,
+) {
+  const { plan } = await entitlement(bucket, prefix);
+  const max = unitLimitForPlan(plan);
+  if (unitCount > max)
+    throw new BillingError(
+      413,
+      `Ce corpus représente environ ${unitCount} unités ; votre forfait (${plan}) autorise ${max} unités par analyse.`,
+    );
 }

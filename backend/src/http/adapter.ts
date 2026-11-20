@@ -12,7 +12,7 @@ export function adapter(handler:(request:Request)=>Promise<Response>,origin:stri
         if(value!==undefined)headers.set(name,Array.isArray(value)?value.join(", "):value);
       }
       const options:RequestInit & {duplex?:"half"}={method:req.method,headers};
-      if(req.method==="POST"){
+      if(req.method==="POST"||req.method==="PUT"||req.method==="PATCH"){
         options.body=Buffer.isBuffer(req.body)?new Uint8Array(req.body):Readable.toWeb(req) as ReadableStream<Uint8Array<ArrayBuffer>>;
         options.duplex="half";
       }

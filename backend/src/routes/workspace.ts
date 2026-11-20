@@ -1,6 +1,17 @@
 import { env } from "../storage/index";
 import { limitedBody, BodyLimit } from "../http/boundedBody";
 import { changeValue, BillingError } from "../services/billing/storage";
+import { purgeRemovedProjects } from "../services/research/purgeProject";
+import { scheduleOrphanTextCleanup } from "../services/research/cleanupOrphanTexts";
+import {
+  externalizeProjectMaterialTexts,
+  fingerprintMaterialTexts,
+  isTextContentHash,
+  loadMaterialTexts,
+  saveMaterialTexts,
+} from "../services/research/persistMaterialTexts";
+import { materialText } from "../../../shared/research/project";
+import { resolveMaxTextChars } from "../../../shared/research/textLimits";
 
 function storage(req: Request) {
   const user =
@@ -10,10 +21,53 @@ function storage(req: Request) {
     ? { bucket: env.BUCKET, prefix: "owners/" + encodeURIComponent(user) + "/" }
     : null;
 }
+
+function materialIdOk(id: string) {
+  return /^[A-Za-z0-9_-]{1,80}$/.test(id);
+}
+
+function materialIdFromUrl(req: Request): string | null {
+  const parts = new URL(req.url).pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+  const textsAt = parts.indexOf("texts");
+  if (textsAt < 0 || !parts[textsAt + 1]) return null;
+  return parts[textsAt + 1];
+}
 export async function GET(req: Request) {
   const s = storage(req);
   if (!s) return new Response(null, { status: 403 });
-  const file = new URL(req.url).searchParams.get("file");
+  const url = new URL(req.url);
+  const file = url.searchParams.get("file");
+  const textId = url.searchParams.get("text");
+  if (textId) {
+    // UUID ou id court (ex. matériaux démo m1) — pas de / ni ..
+    if (!materialIdOk(textId)) return new Response(null, { status: 400 });
+    const hashParam = url.searchParams.get("hash");
+    if (hashParam && !isTextContentHash(hashParam))
+      return new Response(null, { status: 400 });
+    const stored = await loadMaterialTexts(
+      s.bucket,
+      s.prefix,
+      textId,
+      hashParam,
+    );
+    if (!stored) return new Response(null, { status: 404 });
+    const hash =
+      stored.hash ||
+      fingerprintMaterialTexts({
+        extracted: stored.extracted || "",
+        toolExtracted: stored.toolExtracted || "",
+        tables: stored.tables,
+      });
+    return Response.json(
+      {
+        extracted: stored.extracted || "",
+        toolExtracted: stored.toolExtracted || "",
+        tables: stored.tables || [],
+        hash,
+      },
+      { headers: { "Cache-Control": "private,no-store" } },
+    );
+  }
   if (file && !/^(?:[a-f0-9-]{36}|[a-f0-9]{64})$/.test(file))
     return new Response(null, { status: 400 });
   const obj = await s.bucket.get(
@@ -79,19 +133,38 @@ export async function POST(req: Request) {
       }
       return Response.json({ id });
     }
+    // Filet anciens clients : textes inline encore acceptés puis externalisés.
     const { data, rev, attested } = JSON.parse(
-      new TextDecoder().decode(await limitedBody(req, 8 * 1024 * 1024)),
+      new TextDecoder().decode(await limitedBody(req, 16 * 1024 * 1024)),
     );
     if (attested !== true) return new Response(null, { status: 422 });
     if (!data?.projects?.length) return new Response(null, { status: 400 });
+    const previousObj = await s.bucket.get(s.prefix + "workspace");
+    const previous = previousObj
+      ? await previousObj.json<{
+          projects?: Array<{ id?: string; materials?: Array<{ id?: string }> }>;
+        }>()
+      : null;
+    const writeLog = await externalizeProjectMaterialTexts(
+      s.bucket,
+      s.prefix,
+      data,
+    );
     const obj = await s.bucket.put(
       s.prefix + "workspace",
       JSON.stringify(data),
       { onlyIf: rev ? { etagMatches: rev } : { etagDoesNotMatch: "*" } },
     );
-    return obj
-      ? Response.json({ rev: obj.etag })
-      : new Response(null, { status: 409 });
+    if (!obj) return new Response(null, { status: 409 });
+    // Purge jobs / map de pseudonymisation / vision / unités des projets retirés.
+    try {
+      await purgeRemovedProjects(s.bucket, s.prefix, previous, data);
+    } catch {
+      /* la sauvegarde workspace a réussi ; purge best-effort */
+    }
+    // Textes / vision orphelins : arrière-plan (réessai à la prochaine save si échec).
+    scheduleOrphanTextCleanup(s.bucket, s.prefix, data, writeLog);
+    return Response.json({ rev: obj.etag });
   } catch (e) {
     return new Response(null, {
       status:
@@ -102,6 +175,79 @@ export async function POST(req: Request) {
             : e instanceof SyntaxError
               ? 400
               : 500,
+    });
+  }
+}
+
+/**
+ * PUT /api/workspace/texts/:materialId
+ * Persistance dédiée des textes extraits (hors JSON workspace).
+ */
+export async function PUT_text(req: Request) {
+  const s = storage(req);
+  if (!s) return new Response(null, { status: 403 });
+  const origin = req.headers.get("origin");
+  if (origin && origin !== new URL((env as any).APP_BASE_URL || req.url).origin)
+    return new Response(null, { status: 403 });
+  const materialId = materialIdFromUrl(req);
+  if (!materialId || !materialIdOk(materialId))
+    return new Response(null, { status: 400 });
+  const maxBytes = resolveMaxTextChars();
+  try {
+    const raw = await limitedBody(req, maxBytes);
+    const body = JSON.parse(new TextDecoder().decode(raw)) as {
+      extracted?: unknown;
+      toolExtracted?: unknown;
+      tables?: unknown;
+      /** Hash du contenu déjà connu (repli pour fusion partielle). */
+      baseHash?: unknown;
+    };
+    const baseHash =
+      typeof body.baseHash === "string" && isTextContentHash(body.baseHash)
+        ? body.baseHash
+        : null;
+    const existing = await loadMaterialTexts(
+      s.bucket,
+      s.prefix,
+      materialId,
+      baseHash,
+    );
+    const payload = {
+      extracted:
+        typeof body.extracted === "string"
+          ? body.extracted
+          : existing?.extracted || "",
+      toolExtracted:
+        typeof body.toolExtracted === "string"
+          ? body.toolExtracted
+          : existing?.toolExtracted || "",
+      tables: Array.isArray(body.tables)
+        ? body.tables
+        : existing?.tables,
+    };
+    const saved = await saveMaterialTexts(
+      s.bucket,
+      s.prefix,
+      materialId,
+      payload,
+    );
+    const length = materialText({
+      extracted: payload.extracted,
+      toolExtracted: payload.toolExtracted,
+      tables: payload.tables,
+    } as any).length;
+    return Response.json(
+      { textStored: true, length, hash: saved.hash },
+      { headers: { "Cache-Control": "private,no-store" } },
+    );
+  } catch (e) {
+    return new Response(null, {
+      status:
+        e instanceof BodyLimit
+          ? 413
+          : e instanceof SyntaxError
+            ? 400
+            : 500,
     });
   }
 }

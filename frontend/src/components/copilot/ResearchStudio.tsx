@@ -37,6 +37,7 @@ import {
   uploadArchivedDoc,
   type TopicArchiveEntry,
 } from "../topics/topicArchive";
+import { draftFieldsFromTopic } from "../../../../shared/research/projectContext";
 
 export type ResearchPage =
   | "Accueil"
@@ -49,6 +50,28 @@ type Intent = "gate" | "start" | "resume" | "plan";
 const RESUME_KEY = "manuscrit-research-resume";
 const OPEN_MATERIAL_KEY = "manuscrit-open-material";
 const CORPUS_ENTRY_STEP_KEY = "manuscrit-corpus-entry-step";
+const ACTIVE_JOB_KEY = "manuscrit-active-research-job";
+
+const JOB_STEP_LABELS: Record<string, string> = {
+  queued: "En file d’attente",
+  units: "Découpage en unités",
+  extract: "Extraction des fiches",
+  synthesize: "Synthèse des thèmes",
+  plan: "Planification des sections",
+  assign: "Affectation des citations",
+  verify: "Vérification des extraits",
+  done: "Terminé",
+  cancelled: "Annulé",
+  waiting_batch: "Lot économique en cours",
+};
+
+type JobProgressView = {
+  jobId: string;
+  status: string;
+  step: string;
+  progress: { done: number; total: number };
+  error?: string;
+};
 
 function readCorpusEntryStep(): CorpusStep | null {
   try {
@@ -192,6 +215,11 @@ function clearCorpusStartFields(draft: any, full = false) {
     next.disciplineOther = "";
     next.specialty = "";
     next.brief = "";
+    next.researchQuestion = "";
+    next.workingTitle = "";
+    next.hypotheses = "";
+    next.method = "";
+    next.fieldOrCorpus = "";
     next.expectedLength = "";
     next.writingTime = "";
     next.startDate = "";
@@ -205,27 +233,12 @@ function clearCorpusStartFields(draft: any, full = false) {
   return next;
 }
 
-function draftFromTopic(topic: GeneratedTopic) {
-  return {
-    chosenTopic: topic,
-    interests: [
-      topic.title,
-      topic.research_question,
-      "Mots-clés : " + topic.keywords_fr.join(", "),
-    ].join("\n\n"),
-    aims: [
-      topic.research_question,
-      ...(topic.hypotheses || []).map((h) => "Hypothèse : " + h),
-      topic.rationale,
-    ].join("\n\n"),
-    methods: [
-      "Terrain / corpus : " + topic.field_or_corpus,
-      "Méthode : " + topic.method,
-      "Faisabilité : " + topic.feasibility.level,
-      "Premiers pas : " + topic.feasibility.first_steps.join(" ; "),
-    ].join("\n\n"),
-    literature: topic.keywords_fr.concat(topic.keywords_en).join(", "),
-  };
+function draftFromTopic(
+  topic: GeneratedTopic,
+  answers: Record<string, unknown> = {},
+  existing: Record<string, unknown> = {},
+) {
+  return draftFieldsFromTopic(topic, answers, existing);
 }
 
 const modeOf = (page: ResearchPage): Mode | null =>
@@ -292,10 +305,135 @@ export default function ResearchStudio({
     [query, setQuery] = useState(""),
     [busy, wait] = useState(false),
     [msg, notice] = useState(""),
-    [reading, read] = useState<PassagePayload | null>(null);
+    [reading, read] = useState<PassagePayload | null>(null),
+    [preferBatch, setPreferBatch] = useState(false),
+    [jobProgress, setJobProgress] = useState<JobProgressView | null>(null);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const jobPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+
+  function clearJobPoll() {
+    if (jobPollRef.current) {
+      clearInterval(jobPollRef.current);
+      jobPollRef.current = null;
+    }
+  }
+
+  function rememberJobId(jobId: string | null) {
+    try {
+      if (jobId) sessionStorage.setItem(ACTIVE_JOB_KEY, jobId);
+      else sessionStorage.removeItem(ACTIVE_JOB_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function pollResearchJob(jobId: string): Promise<any> {
+    const response = await fetch(
+      `/api/research/jobs/${encodeURIComponent(jobId)}`,
+    );
+    const data = (await response.json()) as any;
+    if (!response.ok) throw Error(data.error || "Suivi de tâche impossible.");
+    return data;
+  }
+
+  async function awaitResearchJob(jobId: string): Promise<any> {
+    rememberJobId(jobId);
+    setJobProgress({
+      jobId,
+      status: "queued",
+      step: "queued",
+      progress: { done: 0, total: 0 },
+    });
+    return new Promise((resolve, reject) => {
+      clearJobPoll();
+      const tick = async () => {
+        try {
+          const data = await pollResearchJob(jobId);
+          setJobProgress({
+            jobId,
+            status: data.status,
+            step: data.step || data.status,
+            progress: data.progress || { done: 0, total: 0 },
+            error: data.error,
+          });
+          if (data.status === "done" && data.result) {
+            clearJobPoll();
+            rememberJobId(null);
+            setJobProgress(null);
+            resolve(data.result);
+            return;
+          }
+          if (data.status === "failed" || data.status === "cancelled") {
+            clearJobPoll();
+            rememberJobId(null);
+            setJobProgress(null);
+            reject(
+              new Error(
+                data.error ||
+                  (data.status === "cancelled"
+                    ? "Analyse annulée."
+                    : "Analyse interrompue."),
+              ),
+            );
+          }
+        } catch (e) {
+          clearJobPoll();
+          rememberJobId(null);
+          setJobProgress(null);
+          reject(e);
+        }
+      };
+      void tick();
+      jobPollRef.current = setInterval(() => void tick(), 3000);
+    });
+  }
+
+  async function cancelActiveJob() {
+    const id = jobProgress?.jobId;
+    if (!id) return;
+    try {
+      await fetch(`/api/research/jobs/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+      });
+    } catch {
+      /* le poll affichera l’état */
+    }
+  }
+
+  useEffect(() => {
+    return () => clearJobPoll();
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "corpus" || busy || jobProgress) return;
+    let stored = "";
+    try {
+      stored = sessionStorage.getItem(ACTIVE_JOB_KEY) || "";
+    } catch {
+      return;
+    }
+    if (!stored) return;
+    wait(true);
+    void awaitResearchJob(stored)
+      .then(async (result) => {
+        const next = { ...draftRef.current, corpusResult: result };
+        set(next);
+        await save(next);
+        notice(
+          result.simulated
+            ? "Aperçu simulé enregistré. Ce n’est pas encore un plan produit par le service IA."
+            : "Plan de rédaction enregistré. Vérifiez chaque section et les extraits cités avant de les retenir.",
+        );
+        setIntent("plan");
+      })
+      .catch((e: any) => {
+        notice(e?.message || "Reprise de l’analyse impossible.");
+      })
+      .finally(() => wait(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, p.id]);
 
   useEffect(() => {
     const incomingArchive = archiveList(p.copilot || {});
@@ -343,6 +481,33 @@ export default function ResearchStudio({
     notice("");
   };
 
+  async function runResearchRequest(opts: {
+    simulate: boolean;
+    revisionFeedback?: string;
+    previousPlan?: { title: string; advice: string }[];
+  }): Promise<any> {
+    const response = await fetch("/api/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: p.id,
+        mode: mode || "corpus",
+        consent: true,
+        simulate: opts.simulate,
+        publicQuery: external ? query : "",
+        preferBatch,
+        modeEconomique: preferBatch,
+        revisionFeedback: opts.revisionFeedback || "",
+        previousPlan: opts.previousPlan || [],
+      }),
+    });
+    const payload = (await response.json()) as any;
+    if (response.status === 202 && payload.jobId)
+      return await awaitResearchJob(payload.jobId);
+    if (!response.ok) throw Error(payload.error || "Analyse impossible.");
+    return payload;
+  }
+
   async function persist(run: boolean): Promise<boolean> {
     if (busy || !mode) return false;
     wait(true);
@@ -374,6 +539,18 @@ export default function ResearchStudio({
         notice("Cadrage enregistré dans ce projet.");
         return true;
       }
+      if (mode === "corpus") {
+        const result = await runResearchRequest({ simulate: simulatePlan });
+        const next = { ...draft, corpusResult: result };
+        set(next);
+        await save(next);
+        notice(
+          result.simulated
+            ? "Aperçu simulé enregistré. Ce n’est pas encore un plan produit par le service IA."
+            : "Plan de rédaction enregistré. Vérifiez chaque section et les extraits cités avant de les retenir.",
+        );
+        return true;
+      }
       const response = await fetch("/api/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -381,7 +558,7 @@ export default function ResearchStudio({
           projectId: p.id,
           mode,
           consent,
-          simulate: mode === "corpus" ? simulatePlan : false,
+          simulate: false,
           publicQuery: external ? query : "",
         }),
       });
@@ -391,11 +568,7 @@ export default function ResearchStudio({
       set(next);
       await save(next);
       notice(
-        mode === "corpus"
-          ? result.simulated
-            ? "Aperçu simulé enregistré. Ce n’est pas encore un plan produit par le service IA."
-            : "Plan de rédaction enregistré. Vérifiez chaque section et les extraits cités avant de les retenir."
-          : "Proposition enregistrée. Examinez chaque piste avant de la retenir.",
+        "Proposition enregistrée. Examinez chaque piste avant de la retenir.",
       );
       return true;
     } catch (e: any) {
@@ -452,6 +625,7 @@ export default function ResearchStudio({
       model: payload.model,
       simulated: payload.simulated,
       projectType: String(payload.answers.project_type || ""),
+      answers: payload.answers,
       topics: payload.topics,
       chosenTopic: previous?.chosenTopic ?? null,
       documents: previous?.documents,
@@ -469,6 +643,7 @@ export default function ResearchStudio({
     topic: GeneratedTopic,
     docs: DocFile[],
     sessionId: string,
+    answers: Record<string, unknown> = {},
   ) {
     const now = new Date().toISOString();
     let documents: TopicArchiveEntry["documents"] = [];
@@ -510,10 +685,18 @@ export default function ResearchStudio({
         ? existing.map((e, i) => (i === idx ? entry : e))
         : [entry, ...existing],
     );
+    const fromTopic = draftFromTopic(topic, answers, current);
     const nextDraft = {
       ...current,
-      ...draftFromTopic(topic),
-      topicArchive: nextArchive,
+      ...fromTopic,
+      topicArchive: nextArchive.map((e) =>
+        e.id === entry.id
+          ? {
+              ...e,
+              answers: (fromTopic.topicAnswers as Record<string, unknown>) || answers,
+            }
+          : e,
+      ),
     };
     try {
       await persistDraft(nextDraft);
@@ -1685,21 +1868,11 @@ export default function ResearchStudio({
         title: s.title,
         advice: s.advice,
       }));
-      const response = await fetch("/api/research", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: p.id,
-          mode: "corpus",
-          consent: true,
-          simulate: simulatePlan,
-          publicQuery: "",
-          revisionFeedback: feedback,
-          previousPlan,
-        }),
+      const nextResult = await runResearchRequest({
+        simulate: simulatePlan,
+        revisionFeedback: feedback,
+        previousPlan,
       });
-      const nextResult = (await response.json()) as any;
-      if (!response.ok) throw Error(nextResult.error);
       const next = {
         ...prepared,
         corpusResult: {
@@ -1765,9 +1938,9 @@ export default function ResearchStudio({
         <TopicGenerator
           goPrivacy={() => go("Politique de confidentialité")}
           onTopicsGenerated={recordTopicsGenerated}
-          onChooseTopic={async (topic, docs, sessionId) => {
+          onChooseTopic={async (topic, docs, sessionId, answers) => {
             setFreshStart(false);
-            await chooseTopic(topic, docs, sessionId);
+            await chooseTopic(topic, docs, sessionId, answers);
             setIntent("resume");
           }}
         />
@@ -1822,15 +1995,53 @@ export default function ResearchStudio({
     );
   }
 
+  const jobPanel =
+    jobProgress && mode === "corpus" ? (
+      <div className="corpus-job-progress" role="status">
+        <h3>Analyse en cours</h3>
+        <p>
+          {JOB_STEP_LABELS[jobProgress.step] || jobProgress.step}
+          {jobProgress.progress.total > 0
+            ? ` — ${jobProgress.progress.done.toLocaleString("fr-FR")} / ${jobProgress.progress.total.toLocaleString("fr-FR")} unités`
+            : ""}
+        </p>
+        {jobProgress.progress.total > 0 && (
+          <div className="bar" aria-hidden="true">
+            <span
+              style={{
+                width: `${Math.min(
+                  100,
+                  Math.round(
+                    (100 * jobProgress.progress.done) /
+                      Math.max(1, jobProgress.progress.total),
+                  ),
+                )}%`,
+              }}
+            />
+          </div>
+        )}
+        <div className="cp-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void cancelActiveJob()}
+          >
+            Annuler
+          </button>
+        </div>
+      </div>
+    ) : null;
+
   return (
     <>
       {confirmDialog}
+      {jobPanel}
       <CorpusOrganizer
         p={p}
         projects={projects}
         draft={draft}
         update={update}
-        busy={busy}
+        busy={busy || Boolean(jobProgress)}
         ready={ready}
         msg={msg}
         consent={consent}
@@ -1841,6 +2052,8 @@ export default function ResearchStudio({
         setSimulatePlan={setSimulatePlan}
         query={query}
         setQuery={setQuery}
+        preferBatch={preferBatch}
+        setPreferBatch={setPreferBatch}
         persist={persist}
         add={add}
         open={open}
@@ -1852,6 +2065,10 @@ export default function ResearchStudio({
           setIntent("gate");
         }}
         goPrivacy={() => go("Politique de confidentialité")}
+        goTopics={() => {
+          setCorpusEntryStep(null);
+          go("Construire mon projet");
+        }}
         onAbandon={() => void abandonCorpusStart()}
         onPlanReady={async () => {
           try {

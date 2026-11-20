@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import type { WorkPlan } from "../../../../shared/research/workPlan";
 import {
   buildGanttColumns,
@@ -216,21 +217,34 @@ export default function WorkPlanView({ plan, className = "" }: Props) {
             </thead>
             <tbody>
               {phases.map((phase, i) => (
-                <tr key={phase.index} className={i % 2 ? "is-alt" : undefined}>
-                  <td>
-                    {phase.index + 1}. {shortPhaseTitle(phase.title, 40)}
-                  </td>
-                  <td>
-                    {periodLabel(phase)}
-                    <small>
-                      {formatWeekSpan(phase.weekStart, phase.weekEnd)}
-                    </small>
-                  </td>
-                  <td>{phase.objective}</td>
-                  <td>{phase.deliverable}</td>
-                  <td>{phase.checkpoint}</td>
-                  <td>{formatHoursFr(phase.hours)}</td>
-                </tr>
+                <Fragment key={phase.index}>
+                  <tr className={i % 2 ? "is-alt" : undefined}>
+                    <td>
+                      {phase.index + 1}. {shortPhaseTitle(phase.title, 40)}
+                    </td>
+                    <td>
+                      {periodLabel(phase)}
+                      <small>
+                        {formatWeekSpan(phase.weekStart, phase.weekEnd)}
+                      </small>
+                    </td>
+                    <td>{phase.objective}</td>
+                    <td>{phase.deliverable}</td>
+                    <td>{phase.checkpoint}</td>
+                    <td>{formatHoursFr(phase.hours)}</td>
+                  </tr>
+                  {(phase.subsections || []).map((sub, j) => (
+                    <tr
+                      key={`${phase.index}-sub-${j}`}
+                      className="wp-pilotage-sub"
+                    >
+                      <td colSpan={6}>
+                        {phase.index + 1}.{j + 1}{" "}
+                        {shortPhaseTitle(sub.title, 60)}
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
               ))}
             </tbody>
           </table>

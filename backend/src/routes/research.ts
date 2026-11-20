@@ -6,13 +6,20 @@ import {
   questions,
 } from "../../../shared/research/project";
 import {
-  buildCorpusBrief,
   canRequestWritingPlan,
   documentTypeLabel,
   writingStructureFor,
   writingTimeDays,
   writingTimeLabel,
 } from "../../../shared/research/corpusOrganization";
+import {
+  buildProjectContext,
+  formatProjectContext,
+  materialCollectionModeLabel,
+  pseudonymizeProjectContext,
+} from "../../../shared/research/projectContext";
+import { hydrateMaterialsTexts } from "../services/research/persistMaterialTexts";
+import { hydrateMaterialsVision } from "../services/research/pipeline/persistVision";
 import { simulateCorpusPlan } from "../../../shared/research/simulateCorpusPlan";
 import {
   buildWorkPlan,
@@ -23,7 +30,52 @@ import {
   workPlanToWritingSchedule,
 } from "../../../shared/research/writingSchedule";
 import { buildCorpusPlanDocx } from "../services/research/buildCorpusPlanDocx";
-import { reserveAnalysis, releaseAnalysis } from "../services/billing/quotas";
+import {
+  assertUnitQuota,
+  reserveAnalysis,
+  releaseAnalysis,
+} from "../services/billing/quotas";
+import {
+  getClaudeSettings,
+  providerCapabilities,
+} from "../services/llm/claude";
+import {
+  emptyCoverage,
+  publicJobView,
+  readJob,
+  updateJob,
+  writeJob,
+  type JobMode,
+  type ResearchJob,
+} from "../services/research/jobs";
+import { enqueueResearchJob } from "../services/research/worker";
+import { buildUnits } from "../../../shared/research/units";
+import { BillingError } from "../services/billing/storage";
+import { deletePseudonymMap } from "../services/research/pipeline/pseudonym";
+
+const CORPUS_SYNC_LIMIT = 120_000;
+
+function researchPipelineEnabled(): boolean {
+  const raw = String(
+    (env as unknown as Record<string, string>).RESEARCH_PIPELINE ||
+      process.env.RESEARCH_PIPELINE ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function resolveJobMode(preferBatch: boolean, unitCount: number): JobMode {
+  const { batchThreshold, capabilities } = getClaudeSettings();
+  if (
+    preferBatch &&
+    capabilities.batch &&
+    unitCount > batchThreshold
+  )
+    return "batch";
+  return "realtime";
+}
 
 type ScheduleOpts = {
   writingTime?: string;
@@ -121,6 +173,7 @@ export async function POST(req: Request) {
     lockKey = "",
     etag = "";
   try {
+    const body = (await req.json()) as any;
     const {
       projectId,
       mode,
@@ -129,7 +182,18 @@ export async function POST(req: Request) {
       simulate,
       revisionFeedback,
       previousPlan,
-    } = (await req.json()) as any;
+    } = body;
+    const preferBatch =
+      body?.pipelineMode === "batch" ||
+      body?.batch === true ||
+      body?.modeEconomique === true;
+    const wantPseudonymize = Boolean(body?.pseudonymize);
+    const pseudonymNames = Array.isArray(body?.pseudonymNames)
+      ? body.pseudonymNames
+          .map((n: unknown) => String(n || "").trim())
+          .filter(Boolean)
+          .slice(0, 200)
+      : [];
     if (!consent || !["design", "corpus"].includes(mode))
       return reply({ error: "Confirmez les conditions du traitement." }, 400);
     const revision =
@@ -158,14 +222,31 @@ export async function POST(req: Request) {
       (x: any) => x.id === projectId,
     );
     if (!p) return reply({ error: "Enregistrez d’abord le projet." }, 404);
+    p.materials = await hydrateMaterialsTexts(
+      bucket,
+      prefix,
+      p.materials || [],
+    );
+    p.materials = await hydrateMaterialsVision(bucket, prefix, p.materials);
     const draft = p.copilot || {};
+    let projectCtx =
+      mode === "corpus"
+        ? buildProjectContext(p, draft, {
+            revisionFeedback: revision,
+            previousPlan: previousSections,
+          })
+        : null;
+    if (mode === "corpus" && wantPseudonymize && projectCtx)
+      projectCtx = pseudonymizeProjectContext(projectCtx, pseudonymNames);
     const brief =
       mode === "design"
         ? questions
             .filter(([k]) => draft[k]?.trim())
             .map(([k, q]) => q + "\n" + draft[k])
             .join("\n\n")
-        : buildCorpusBrief(draft, p.materials || []) ||
+        : formatProjectContext(projectCtx!, {
+            includeRevision: Boolean(revision),
+          }) ||
           (draft.brief || "").trim();
     const items =
       mode === "corpus"
@@ -183,6 +264,8 @@ export async function POST(req: Request) {
         title: `${materialCode(m)} · ${m.title}`,
         code: materialCode(m),
         text: materialText(m),
+        collectionMode: materialCollectionModeLabel(m),
+        interviewerMarker: String(m.interviewerMarker || "").trim() || undefined,
       }))
       .filter((s: any) => s.text.trim())
       .sort((a: any, b: any) => a.id.localeCompare(b.id));
@@ -213,17 +296,107 @@ export async function POST(req: Request) {
         },
         422,
       );
-    if (
-      sources.reduce((n: number, s: any) => n + s.text.length, brief.length) >
-      120000
-    )
-      return reply(
-        {
-          error:
-            "Ce corpus dépasse 120 000 caractères par analyse. Sélectionnez moins de fiches ou fractionnez le matériau.",
-        },
-        413,
+    const corpusChars = sources.reduce(
+      (n: number, s: any) => n + s.text.length,
+      brief.length,
+    );
+    if (corpusChars > CORPUS_SYNC_LIMIT) {
+      if (!(mode === "corpus" && researchPipelineEnabled()))
+        return reply(
+          {
+            error:
+              "Ce corpus dépasse 120 000 caractères par analyse. Sélectionnez moins de fiches ou fractionnez le matériau.",
+          },
+          413,
+        );
+
+      const jobId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      let billingToken = "";
+      const providerRaw = String(config.AI_PROVIDER || "")
+        .trim()
+        .toLowerCase();
+      const claudeProvider =
+        providerRaw === "anthropic" ||
+        providerRaw === "bedrock" ||
+        providerRaw === "vertex";
+      const forceSimulation =
+        Boolean(simulate) ||
+        (!claudeProvider &&
+          (!config.AI_MODEL || !config.AI_BASE_URL || !config.AI_API_KEY));
+
+      const materialById = new Map(
+        (p.materials || []).map((m: any) => [m.id, m]),
       );
+      let unitCount = 0;
+      for (const s of sources) {
+        const full = {
+          id: s.id,
+          extracted: s.text,
+          ...(materialById.get(s.id) || {}),
+        };
+        unitCount += buildUnits(full).length;
+      }
+      const jobMode = resolveJobMode(Boolean(preferBatch), unitCount);
+      try {
+        await assertUnitQuota(bucket, prefix, unitCount);
+      } catch (e) {
+        if (e instanceof BillingError)
+          return reply({ error: e.message }, e.status);
+        throw e;
+      }
+
+      if (!forceSimulation)
+        billingToken = await reserveAnalysis(bucket, prefix);
+
+      const jobBrief =
+        (projectCtx
+          ? formatProjectContext(projectCtx)
+          : brief) || brief;
+      const job: ResearchJob = {
+        id: jobId,
+        projectId,
+        status: "queued",
+        step: "queued",
+        progress: { done: 0, total: 0 },
+        mode: jobMode,
+        createdAt: now,
+        updatedAt: now,
+        materialIds: sources.map((s: { id: string }) => s.id),
+        coverage: emptyCoverage(),
+        billingToken: billingToken || undefined,
+        brief: jobBrief,
+        format:
+          documentTypeLabel(draft.documentType, draft.documentTypeOther) ||
+          p.type,
+        writingStructure: writingStructureFor(draft.documentType),
+        request: {
+          mode,
+          consent: true,
+          simulate: forceSimulation,
+          publicQuery:
+            typeof publicQuery === "string"
+              ? publicQuery.trim().slice(0, 180)
+              : "",
+          revisionFeedback: revision,
+          previousPlan: previousSections,
+          preferBatch: Boolean(preferBatch),
+          pseudonymize: wantPseudonymize,
+          pseudonymNames,
+        },
+      };
+      const created = await writeJob(bucket, prefix, job);
+      if (!created) {
+        if (billingToken)
+          await releaseAnalysis(bucket, prefix, billingToken);
+        return reply(
+          { error: "Impossible de créer la tâche d’analyse. Réessayez." },
+          503,
+        );
+      }
+      enqueueResearchJob(prefix, jobId);
+      return reply({ jobId }, 202);
+    }
     const format =
       mode === "corpus"
         ? documentTypeLabel(draft.documentType, draft.documentTypeOther) ||
@@ -231,12 +404,10 @@ export async function POST(req: Request) {
         : p.type;
     const input = {
       mode,
-      brief:
-        mode === "corpus" && revision
-          ? `${brief}\n\nDemande de révision du plan précédent :\n${revision}`
-          : brief,
+      brief,
       format,
       sources,
+      documentType: mode === "corpus" ? draft.documentType : undefined,
       writingStructure:
         mode === "corpus" ? writingStructureFor(draft.documentType) : undefined,
       publicQuery:
@@ -365,6 +536,7 @@ export async function POST_planDocx(req: Request) {
       kind?: "plan" | "schedule";
       projectTitle?: string;
       documentLabel?: string;
+      documentType?: string;
       plan?: {
         simulated?: boolean;
         date?: string;
@@ -372,9 +544,23 @@ export async function POST_planDocx(req: Request) {
         sections?: {
           title?: string;
           advice?: string;
+          thesis?: string;
           evidence?: { id?: string; quote?: string }[];
+          subsections?: {
+            title?: string;
+            thesis?: string;
+            advice?: string;
+            evidence?: { id?: string; quote?: string }[];
+          }[];
         }[];
         gaps?: string[];
+        themes?: {
+          themeId?: string;
+          label?: string;
+          emergent?: boolean;
+          fragile?: boolean;
+          materialCount?: number;
+        }[];
         schedule?: {
           label?: string;
           totalDays?: number;
@@ -406,9 +592,10 @@ export async function POST_planDocx(req: Request) {
       return reply({ error: "Aucun planning à exporter." }, 400);
 
     const materials = Array.isArray(body.materials) ? body.materials : [];
-    const sections = (plan.sections || []).map((s) => ({
-      ...s,
-      evidence: (s.evidence || []).map((ev) => {
+    const enrichEvidence = (
+      list: { id?: string; quote?: string; source?: string }[] = [],
+    ) =>
+      list.map((ev) => {
         const m = materials.find((x) => x.id === ev.id);
         return {
           ...ev,
@@ -417,18 +604,27 @@ export async function POST_planDocx(req: Request) {
             : undefined,
           title: m?.title,
         };
-      }),
+      });
+    const sections = (plan.sections || []).map((s) => ({
+      ...s,
+      evidence: enrichEvidence(s.evidence),
+      subsections: (s.subsections || []).map((sub) => ({
+        ...sub,
+        evidence: enrichEvidence(sub.evidence),
+      })),
     }));
 
     const file = await buildCorpusPlanDocx({
       kind,
       projectTitle: body.projectTitle,
       documentLabel: body.documentLabel,
+      documentType: body.documentType,
       simulated: Boolean(plan.simulated),
       date: plan.date,
       model: plan.model,
       sections,
       gaps: kind === "plan" ? plan.gaps : undefined,
+      themes: kind === "plan" ? plan.themes : undefined,
       schedule: kind === "schedule" ? plan.schedule : undefined,
       workPlan: kind === "schedule" ? (plan.workPlan as any) : undefined,
     });
@@ -446,4 +642,82 @@ export async function POST_planDocx(req: Request) {
       Number.isInteger(e.status) ? e.status : 502,
     );
   }
+}
+
+function jobAuth(req: Request): { uid: string; prefix: string } | Response {
+  const uid = req.headers.get("x-manuscrit-user") || null;
+  const bucket = env.BUCKET;
+  const config = env as unknown as Record<string, string>;
+  if (!uid || !bucket) return reply({ error: "Connexion requise." }, 403);
+  if (
+    req.headers.get("origin") &&
+    req.headers.get("origin") !== new URL(config.APP_BASE_URL || req.url).origin
+  )
+    return reply({ error: "Origine refusée." }, 403);
+  return { uid, prefix: "owners/" + encodeURIComponent(uid) + "/" };
+}
+
+function jobIdFromUrl(req: Request, suffix?: string): string | null {
+  const path = new URL(req.url).pathname.replace(/\/+$/, "");
+  const parts = path.split("/").filter(Boolean);
+  // .../api/research/jobs/:id[/cancel]
+  const jobsAt = parts.indexOf("jobs");
+  if (jobsAt < 0 || !parts[jobsAt + 1]) return null;
+  if (suffix && parts[jobsAt + 2] !== suffix) return null;
+  if (!suffix && parts[jobsAt + 2]) return null;
+  return parts[jobsAt + 1];
+}
+
+/**
+ * GET /api/research/capabilities
+ * Capacités UI (mode lot) — pas de secrets ni d’identifiants fournisseur.
+ */
+export async function GET_capabilities(req: Request) {
+  const auth = jobAuth(req);
+  if (auth instanceof Response) return auth;
+  const settings = getClaudeSettings();
+  return reply({
+    batch: Boolean(settings.capabilities.batch),
+    batchThreshold: settings.batchThreshold,
+  });
+}
+
+/** GET /api/research/jobs/:id */
+export async function GET_job(req: Request) {
+  const auth = jobAuth(req);
+  if (auth instanceof Response) return auth;
+  const jobId = jobIdFromUrl(req);
+  if (!jobId) return reply({ error: "Identifiant de tâche manquant." }, 400);
+  const current = await readJob(env.BUCKET!, auth.prefix, jobId);
+  if (!current) return reply({ error: "Tâche introuvable." }, 404);
+  return reply(publicJobView(current.job));
+}
+
+/** POST /api/research/jobs/:id/cancel */
+export async function POST_cancelJob(req: Request) {
+  const auth = jobAuth(req);
+  if (auth instanceof Response) return auth;
+  const jobId = jobIdFromUrl(req, "cancel");
+  if (!jobId) return reply({ error: "Identifiant de tâche manquant." }, 400);
+  const bucket = env.BUCKET!;
+  const updated = await updateJob(bucket, auth.prefix, jobId, (job) => {
+    if (job.status === "done" || job.status === "cancelled") return job;
+    if (job.status === "failed") return job;
+    return {
+      ...job,
+      status: "cancelled",
+      step: "cancelled",
+      error: "Analyse annulée.",
+    };
+  });
+  if (!updated) return reply({ error: "Tâche introuvable." }, 404);
+  if (updated.billingToken) {
+    await releaseAnalysis(bucket, auth.prefix, updated.billingToken);
+    await updateJob(bucket, auth.prefix, jobId, (job) => ({
+      ...job,
+      billingToken: undefined,
+    }));
+  }
+  await deletePseudonymMap(bucket, auth.prefix, jobId);
+  return reply(publicJobView(updated));
 }

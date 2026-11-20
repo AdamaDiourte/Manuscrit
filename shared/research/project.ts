@@ -30,6 +30,16 @@ export const questions = [
     "Références lues, débats ou limites à explorer.",
   ],
 ] as const;
+/** Mode de recueil lisible d’une fiche (outil, sinon type de données). */
+export function materialCollectionModeLabel(m: {
+  toolType?: string;
+  type?: string;
+}): string {
+  const tool = String(m.toolType || "").trim();
+  if (tool && tool !== "Aucun") return tool;
+  return String(m.type || "").trim();
+}
+
 export function materialCode(m: { id: string; type: string }) {
   const prefixes: Record<string, string> = {
     "Grille d’entretien": "GRI",
@@ -61,8 +71,15 @@ export function materialCode(m: { id: string; type: string }) {
   };
   return (prefixes[m.type] || "MAT") + "-" + m.id.slice(0, 8).toUpperCase();
 }
+/**
+ * Texte agrégé pour l’IA et les offsets evidence.
+ * Les transcriptions vision (hydratées depuis ObjectStore) sont TOUJOURS
+ * concaténées à la fin, pour ne pas décaler les offsets des plans existants.
+ * Sans transcription, le résultat est identique à l’agrégat historique
+ * (observation + text + extracted + toolExtracted + extra).
+ */
 export function materialText(m: any) {
-  return [
+  const base = [
     m.observation,
     m.text,
     m.extracted,
@@ -73,4 +90,24 @@ export function materialText(m: any) {
   ]
     .filter(Boolean)
     .join("\n\n");
+  const vision = [m.visionTranscription, m.toolVisionTranscription]
+    .filter((v) => typeof v === "string" && String(v).trim())
+    .join("\n\n");
+  if (!vision) return base;
+  return base ? base + "\n\n" + vision : vision;
+}
+
+/** Longueur du texte « auteur » hors transcription IA (pour marquer les evidence). */
+export function materialTextBaseLength(m: any): number {
+  return [
+    m.observation,
+    m.text,
+    m.extracted,
+    m.toolExtracted,
+    ...Object.entries(m.extra || {})
+      .filter(([, v]) => typeof v === "string" && v)
+      .map(([k, v]) => k + " — " + v),
+  ]
+    .filter(Boolean)
+    .join("\n\n").length;
 }

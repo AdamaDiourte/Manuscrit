@@ -61,8 +61,109 @@ const isResearchPage = (v: string): v is ResearchPage =>
   researchPages.includes(v as ResearchPage);
 import Subscriptions from "../components/copilot/Subscriptions";
 import Attestation from "../components/copilot/Attestation";
-import { materialCode } from "../../../shared/research/project";
+import { isInterviewMaterial } from "../../../shared/research/interviewMarkers";
+import {
+  materialCode,
+  materialText,
+} from "../../../shared/research/project";
+import { buildUnits } from "../../../shared/research/units";
 import Book from "../components/Book";
+
+function materialHasInlineExtract(m: any) {
+  return Boolean(
+    (typeof m?.extracted === "string" && m.extracted.trim()) ||
+      (typeof m?.toolExtracted === "string" && m.toolExtracted.trim()) ||
+      (Array.isArray(m?.tables) && m.tables.length),
+  );
+}
+
+function materialHasInlineVision(m: any) {
+  return Boolean(
+    (typeof m?.visionTranscription === "string" &&
+      m.visionTranscription.trim()) ||
+      (typeof m?.toolVisionTranscription === "string" &&
+        m.toolVisionTranscription.trim()),
+  );
+}
+
+/** Retire textes/vision volumineux seulement si externalisation confirmée. */
+function stripBulkyIfStored(m: any) {
+  if (!m) return m;
+  const copy = { ...m };
+  if (copy.textStored === true) {
+    delete copy.extracted;
+    delete copy.toolExtracted;
+    delete copy.tables;
+    delete copy.textPersistError;
+  }
+  if (copy.visionStored === true) {
+    delete copy.visionTranscription;
+    delete copy.toolVisionTranscription;
+  }
+  return copy;
+}
+
+/**
+ * Instantanés versions : indicateurs seulement.
+ * Ne retire le texte que si le hash correspondant est déjà confirmé.
+ */
+function lightenVersionSnap(snap: any) {
+  if (!snap || typeof snap !== "object") return snap;
+  const copy = { ...snap };
+  if (materialHasInlineExtract(copy)) {
+    if (!copy.textFingerprint) return copy;
+    copy.textStored = true;
+    delete copy.extracted;
+    delete copy.toolExtracted;
+    delete copy.tables;
+  }
+  if (materialHasInlineVision(copy)) {
+    if (!copy.visionFingerprint) return copy;
+    copy.visionStored = true;
+    delete copy.visionTranscription;
+    delete copy.toolVisionTranscription;
+  }
+  delete copy.textPersistError;
+  return copy;
+}
+
+/** Corps POST workspace : jamais de textes confirmés externalisés. */
+function workspaceDataForPost(data: any) {
+  const out = structuredClone(data);
+  for (const project of out.projects || []) {
+    project.materials = (project.materials || []).map(stripBulkyIfStored);
+    for (const version of project.versions || []) {
+      for (const side of ["before", "after"] as const) {
+        if (version?.[side]) version[side] = lightenVersionSnap(version[side]);
+      }
+    }
+  }
+  return out;
+}
+
+/** Aligne l’état local après save (matériaux confirmés + versions allégées). */
+function slimMaterialsInPlace(data: any) {
+  for (const project of data?.projects || []) {
+    for (const m of project.materials || []) {
+      if (m.textStored === true) {
+        delete m.extracted;
+        delete m.toolExtracted;
+        delete m.tables;
+        delete m.textPersistError;
+      }
+      if (m.visionStored === true) {
+        delete m.visionTranscription;
+        delete m.toolVisionTranscription;
+      }
+    }
+    for (const version of project.versions || []) {
+      for (const side of ["before", "after"] as const) {
+        if (version?.[side]) version[side] = lightenVersionSnap(version[side]);
+      }
+    }
+  }
+  return data;
+}
 const nav: any = [
   ["Tableau de bord", LayoutDashboard],
   ["Matériaux", FolderOpen],
@@ -191,6 +292,41 @@ export default function Page() {
     K({});
     E("");
   }
+  async function hydrateMaterialForm(material: any) {
+    if (
+      !material?.id ||
+      !material.textStored ||
+      materialHasInlineExtract(material)
+    )
+      return material;
+    try {
+      const qs =
+        "/api/workspace?text=" +
+        encodeURIComponent(material.id) +
+        (material.textFingerprint
+          ? "&hash=" + encodeURIComponent(material.textFingerprint)
+          : "");
+      const r = await fetch(qs, { cache: "no-store" });
+      if (!r.ok) return material;
+      const payload = (await r.json()) as {
+        extracted?: string;
+        toolExtracted?: string;
+        tables?: unknown;
+        hash?: string;
+      };
+      return {
+        ...material,
+        extracted: payload.extracted || "",
+        toolExtracted: payload.toolExtracted || "",
+        tables: payload.tables || [],
+        textFingerprint:
+          material.textFingerprint || payload.hash || material.textFingerprint,
+      };
+    } catch {
+      return material;
+    }
+  }
+
   function edit(m: string, f: any = {}) {
     E("");
     attest(false);
@@ -199,6 +335,33 @@ export default function Page() {
     F(structuredClone(f));
     M(m);
     O(false);
+    if (
+      m === "material" &&
+      f?.id &&
+      f.textStored &&
+      !materialHasInlineExtract(f)
+    ) {
+      void hydrateMaterialForm(f).then((hydrated) => {
+        F((current: any) =>
+          current?.id === hydrated.id ? { ...current, ...hydrated } : current,
+        );
+      });
+    }
+    if (m === "version") {
+      void (async () => {
+        const before = f?.before
+          ? await hydrateMaterialForm(f.before)
+          : f?.before;
+        const after = f?.after
+          ? await hydrateMaterialForm(f.after)
+          : f?.after;
+        F((current: any) =>
+          current?.id === f.id
+            ? { ...current, before, after }
+            : current,
+        );
+      })();
+    }
   }
   const val = (key: string, v: any) => F((f: any) => ({ ...f, [key]: v }));
   function newMaterial() {
@@ -214,28 +377,34 @@ export default function Page() {
   async function uploadAttachedFile(selected: File) {
     if (selected.size > 20 * 1024 * 1024)
       throw Error("Le fichier dépasse 20 Mo.");
-    let extracted = "";
-    if (/\.(txt|md|csv|tsv|pdf|docx|xlsx)$/i.test(selected.name)) {
-      const { extractText } = await import("../services/import/extractText");
-      try {
-        extracted = await extractText(selected);
-      } catch {
-        extracted = "";
-      }
+    let fileToUpload = selected;
+    if (/\.(png|jpe?g|webp|gif)$/i.test(selected.name)) {
+      const { resizeImageForUpload } = await import(
+        "../services/import/resizeImage"
+      );
+      fileToUpload = await resizeImageForUpload(selected);
     }
+    const { extractDocument } = await import("../services/import/extractText");
+    const doc = await extractDocument(fileToUpload);
     const r = await fetch(
-      "/api/workspace?upload=1&name=" + encodeURIComponent(selected.name),
+      "/api/workspace?upload=1&name=" +
+        encodeURIComponent(fileToUpload.name),
       {
         method: "POST",
         headers: { "X-Deposit-Attested": "yes" },
-        body: selected,
+        body: fileToUpload,
       },
     );
     if (!r.ok) throw Error("Le dépôt du fichier a échoué.");
     return {
       id: ((await r.json()) as { id: string }).id,
-      filename: selected.name,
-      extracted,
+      filename: fileToUpload.name,
+      extracted: doc.text || "",
+      extractionStatus: doc.status,
+      extractionMessage: doc.message || "",
+      tables: doc.tables,
+      scanned: Boolean(doc.scanned),
+      pdfPageCount: doc.pdfPageCount,
     };
   }
   function project(type = "Mémoire") {
@@ -261,14 +430,106 @@ export default function Page() {
       lock.current = false;
     }
   }
+  async function putMaterialTexts(
+    materialId: string,
+    payload: {
+      extracted?: string;
+      toolExtracted?: string;
+      tables?: unknown;
+      baseHash?: string;
+    },
+  ) {
+    const r = await fetch(
+      "/api/workspace/texts/" + encodeURIComponent(materialId),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          extracted: payload.extracted || "",
+          toolExtracted: payload.toolExtracted || "",
+          tables: Array.isArray(payload.tables) ? payload.tables : [],
+          ...(payload.baseHash ? { baseHash: payload.baseHash } : {}),
+        }),
+      },
+    );
+    if (!r.ok)
+      throw Error(
+        r.status === 413
+          ? "Texte non enregistré — trop volumineux."
+          : "Texte non enregistré — Réessayer",
+      );
+    return (await r.json()) as {
+      textStored: boolean;
+      length: number;
+      hash: string;
+    };
+  }
+
+  /** Persiste les textes inline d’un matériau ; en échec le texte reste en mémoire. */
+  async function persistMaterialExtracts(material: any) {
+    if (!material?.id || !materialHasInlineExtract(material)) {
+      material.textPersistError = false;
+      return material;
+    }
+    try {
+      const meta = await putMaterialTexts(material.id, {
+        extracted: material.extracted,
+        toolExtracted: material.toolExtracted,
+        tables: material.tables,
+        baseHash: material.textFingerprint,
+      });
+      material.textStored = true;
+      material.textLength = materialText(material).length || meta.length;
+      material.textFingerprint = meta.hash;
+      try {
+        material.unitCount = buildUnits(material).length;
+      } catch {
+        material.unitCount = material.unitCount || 0;
+      }
+      material.textPersistError = false;
+      return material;
+    } catch (err: any) {
+      material.textStored = false;
+      material.textPersistError = true;
+      throw Error(err?.message || "Texte non enregistré — Réessayer");
+    }
+  }
+
+  /**
+   * Textes encore inline (matériaux + chaque instantané) : PUT adressé par hash
+   * avant le POST. Un instantané dont le contenu DIFFÈRE du courant obtient
+   * son propre hash — pas d’écrasement.
+   */
+  async function persistPendingWorkspaceTexts(data: any) {
+    for (const project of data?.projects || []) {
+      for (const m of project.materials || []) {
+        if (!m?.id || !materialHasInlineExtract(m)) continue;
+        await persistMaterialExtracts(m);
+      }
+      for (const version of project.versions || []) {
+        for (const side of ["before", "after"] as const) {
+          const snap = version?.[side];
+          if (!snap?.id || !materialHasInlineExtract(snap)) continue;
+          await persistMaterialExtracts(snap);
+        }
+      }
+    }
+  }
+
   async function commit(next: any) {
     // Garde-fou : jamais POST defaultData / état local tant que le GET n’a pas réussi.
     if (!ready)
       throw Error("Le chargement doit être terminé avant l’enregistrement.");
+    await persistPendingWorkspaceTexts(next);
+    const payload = workspaceDataForPost(next);
     const r = await fetch("/api/workspace", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: next, rev: rev.current, attested: true }),
+      body: JSON.stringify({
+        data: payload,
+        rev: rev.current,
+        attested: true,
+      }),
     });
     if (r.status === 409)
       throw Error(
@@ -281,6 +542,7 @@ export default function Page() {
           : "L’enregistrement a échoué.",
       );
     rev.current = ((await r.json()) as { rev: string }).rev;
+    slimMaterialsInPlace(next);
     setData(next);
   }
   async function saveDraft(draft: any) {
@@ -372,6 +634,7 @@ export default function Page() {
               "Joignez le fichier des données recueillies (obligatoire).",
             );
           }
+          if (!a.id) a.id = crypto.randomUUID();
           if (toolFile && !skipToolFile) {
             const up = await uploadAttachedFile(toolFile);
             if (
@@ -386,6 +649,14 @@ export default function Page() {
             a.toolFile = up.id;
             a.toolFilename = up.filename;
             a.toolExtracted = up.extracted;
+            a.toolExtractionStatus = up.extractionStatus;
+            a.toolExtractionMessage = up.extractionMessage;
+            try {
+              await persistMaterialExtracts(a);
+            } catch (persistErr: any) {
+              F({ ...a, textPersistError: true });
+              throw persistErr;
+            }
           }
           if (file) {
             const up = await uploadAttachedFile(file);
@@ -402,25 +673,50 @@ export default function Page() {
             a.file = up.id;
             a.filename = up.filename;
             a.extracted = up.extracted;
+            a.extractionStatus = up.extractionStatus;
+            a.extractionMessage = up.extractionMessage;
+            a.tables = up.tables;
+            a.scanned = up.scanned;
+            a.pdfPageCount = up.pdfPageCount;
+            try {
+              await persistMaterialExtracts(a);
+            } catch (persistErr: any) {
+              F({ ...a, textPersistError: true });
+              throw persistErr;
+            }
+          } else if (materialHasInlineExtract(a) && a.textStored !== true) {
+            try {
+              await persistMaterialExtracts(a);
+            } catch (persistErr: any) {
+              F({ ...a, textPersistError: true });
+              throw persistErr;
+            }
           }
         } else if (file) {
+          if (!a.id) a.id = crypto.randomUUID();
           const up = await uploadAttachedFile(file);
           a.file = up.id;
           a.filename = up.filename;
           a.extracted = up.extracted;
+          a.extractionStatus = up.extractionStatus;
+          a.extractionMessage = up.extractionMessage;
+          a.tables = up.tables;
+          a.scanned = up.scanned;
+          a.pdfPageCount = up.pdfPageCount;
         }
         if (!a.id) a.id = crypto.randomUUID();
         const i = q[key].findIndex((x: any) => x.id === a.id);
-        const before = i < 0 ? null : q[key][i];
-        if (i < 0) q[key].push(a);
-        else q[key][i] = a;
+        const before = i < 0 ? null : stripBulkyIfStored(q[key][i]);
+        const stored = stripBulkyIfStored(a);
+        if (i < 0) q[key].push(stored);
+        else q[key][i] = stored;
         q.versions.unshift({
           id: crypto.randomUUID(),
           time: new Date().toISOString(),
           title: a.title,
           key,
           before,
-          after: a,
+          after: stored,
           action: i < 0 ? "Création" : "Mise à jour",
         });
       }
@@ -722,10 +1018,11 @@ export default function Page() {
                     title: m.title,
                     type: m.type,
                     hasText: Boolean(
-                      [m.observation, m.text, m.extracted, m.toolExtracted]
-                        .filter(Boolean)
-                        .join("")
-                        .trim(),
+                      m.textStored ||
+                        [m.observation, m.text, m.extracted, m.toolExtracted]
+                          .filter(Boolean)
+                          .join("")
+                          .trim(),
                     ),
                   })),
                   frame: {
@@ -935,6 +1232,18 @@ export default function Page() {
                                 : ""}
                               {" · "}
                               Données : {x.type || "—"}
+                              {x.extractionStatus &&
+                              x.extractionStatus !== "ok"
+                                ? ` · Extraction : ${
+                                    x.extractionStatus === "scanned"
+                                      ? "PDF scanné"
+                                      : x.extractionStatus === "empty"
+                                        ? "pas de texte extrait"
+                                        : x.extractionStatus === "unsupported"
+                                          ? "format non extrait"
+                                          : "échec d’extraction"
+                                  }`
+                                : ""}
                             </small>
                           </span>
                           <ChevronRight size={15} />
@@ -1144,7 +1453,15 @@ export default function Page() {
                         }}
                         placeholder="Choisir un type…"
                         allowEmpty={false}
-                        options={[...PROJECT_MODEL_OPTIONS]}
+                        options={[
+                          ...(form.type &&
+                          !PROJECT_MODEL_OPTIONS.some(
+                            (o) => o.value === form.type,
+                          )
+                            ? [{ value: form.type, label: form.type }]
+                            : []),
+                          ...PROJECT_MODEL_OPTIONS,
+                        ]}
                         aria-label="Type de projet"
                       />
                     </label>
@@ -1189,13 +1506,21 @@ export default function Page() {
                         Outil de recueil
                         <TopicSelect
                           value={form.toolType || ""}
-                          onChange={(value) => {
-                            val("toolType", value);
-                            if (isNoTool(value)) {
-                              val("toolUnavailable", false);
-                              setToolFile(null);
-                            }
-                          }}
+                          onChange={(value) =>
+                            F((f: any) => {
+                              const next = {
+                                ...f,
+                                toolType: value,
+                                ...(isNoTool(value)
+                                  ? { toolUnavailable: false }
+                                  : {}),
+                              };
+                              if (isNoTool(value)) setToolFile(null);
+                              if (!isInterviewMaterial(next))
+                                next.interviewerMarker = "";
+                              return next;
+                            })
+                          }
                           placeholder="Choisir l’outil…"
                           allowEmpty={false}
                           options={[
@@ -1281,7 +1606,14 @@ export default function Page() {
                         Données recueillies
                         <TopicSelect
                           value={form.type || ""}
-                          onChange={(value) => val("type", value)}
+                          onChange={(value) =>
+                            F((f: any) => {
+                              const next = { ...f, type: value };
+                              if (!isInterviewMaterial(next))
+                                next.interviewerMarker = "";
+                              return next;
+                            })
+                          }
                           placeholder="Choisir les données…"
                           allowEmpty={false}
                           options={[
@@ -1296,6 +1628,25 @@ export default function Page() {
                           aria-label="Données recueillies"
                         />
                       </label>
+                      {isInterviewMaterial(form) && (
+                        <label>
+                          Marqueur de l’enquêteur dans la transcription
+                          (facultatif)
+                          <input
+                            maxLength={40}
+                            value={form.interviewerMarker || ""}
+                            onChange={(e) =>
+                              val("interviewerMarker", e.target.value)
+                            }
+                            placeholder="Ex. AD : ou C :"
+                            aria-label="Marqueur de l’enquêteur dans la transcription"
+                          />
+                          <span className="field-hint">
+                            Si renseigné, remplace la détection automatique (Q :,
+                            Enquêteur :, etc.) pour ce matériau.
+                          </span>
+                        </label>
+                      )}
                       <p className="material-kind-hint">
                         Fichier obligatoire : entretien, réponses, notes,
                         archives…
@@ -1326,11 +1677,100 @@ export default function Page() {
                           onChange={(e) => H(e.target.files?.[0] || null)}
                         />
                       </label>
+                      {form.extractionMessage && (
+                        <p
+                          className="material-extraction-status"
+                          role="status"
+                        >
+                          {form.extractionMessage}
+                        </p>
+                      )}
+                      {(() => {
+                        let chars = Number(form.textLength) || 0;
+                        let units = Number(form.unitCount) || 0;
+                        try {
+                          if (materialHasInlineExtract(form) || form.observation) {
+                            chars = materialText(form).length;
+                            units = buildUnits(form).length;
+                          }
+                        } catch {
+                          /* ignore */
+                        }
+                        if (!chars && !units && !form.textStored) return null;
+                        return (
+                          <p
+                            className="material-extraction-status"
+                            role="status"
+                          >
+                            Texte extrait :{" "}
+                            {chars.toLocaleString("fr-FR")} caractère
+                            {chars > 1 ? "s" : ""}
+                            {" · "}
+                            {units.toLocaleString("fr-FR")} unité
+                            {units > 1 ? "s" : ""} prévue
+                            {units > 1 ? "s" : ""}
+                            {form.textStored
+                              ? " (stocké hors workspace)"
+                              : ""}
+                          </p>
+                        );
+                      })()}
+                      {form.textPersistError && materialHasInlineExtract(form) && (
+                        <p
+                          className="material-extraction-status"
+                          role="alert"
+                        >
+                          Texte non enregistré —{" "}
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={async () => {
+                              E("");
+                              try {
+                                const next = { ...form };
+                                await persistMaterialExtracts(next);
+                                F(next);
+                              } catch (ex: any) {
+                                F((f: any) => ({
+                                  ...f,
+                                  textPersistError: true,
+                                }));
+                                E(
+                                  ex?.message ||
+                                    "Texte non enregistré — Réessayer",
+                                );
+                              }
+                            }}
+                          >
+                            Réessayer
+                          </button>
+                        </p>
+                      )}
                       {form.extracted && (
                         <details>
                           <summary>Texte extrait des données</summary>
                           <pre className="source-passage">
                             {form.extracted}
+                          </pre>
+                        </details>
+                      )}
+                      {Array.isArray(form.tables) && form.tables.length > 0 && (
+                        <details>
+                          <summary>
+                            Structure des tableaux ({form.tables.length}{" "}
+                            feuille
+                            {form.tables.length > 1 ? "s" : ""})
+                          </summary>
+                          <pre className="source-passage">
+                            {form.tables
+                              .map(
+                                (t: any) =>
+                                  `${t.sheet} · ${t.rowCount} lignes · ${
+                                    t.columns?.length || 0
+                                  } colonnes` +
+                                  (t.range ? ` · ${t.range}` : ""),
+                              )
+                              .join("\n")}
                           </pre>
                         </details>
                       )}
@@ -1341,6 +1781,14 @@ export default function Page() {
                             {form.toolExtracted}
                           </pre>
                         </details>
+                      )}
+                      {form.toolExtractionMessage && !form.toolUnavailable && (
+                        <p
+                          className="material-extraction-status"
+                          role="status"
+                        >
+                          {form.toolExtractionMessage}
+                        </p>
                       )}
                     </div>
 

@@ -34,6 +34,7 @@ type Props = {
     topic: GeneratedTopic,
     docs: DocFile[],
     sessionId: string,
+    answers: Record<string, unknown>,
   ) => void | Promise<void>;
 };
 
@@ -298,7 +299,7 @@ export default function TopicGenerator({
           onChooseTopic
             ? async (topic, docs) => {
                 clearDraft();
-                await onChooseTopic(topic, docs, sessionId);
+                await onChooseTopic(topic, docs, sessionId, answers);
               }
             : undefined
         }

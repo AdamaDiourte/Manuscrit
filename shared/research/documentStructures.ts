@@ -3,6 +3,11 @@
  * L’IA doit suivre scrupuleusement ces sections (ordre et finalité).
  */
 
+/**
+ * Types de support.
+ * Périmètre produit actif : licence, m1, m2, pro, thesis, article, book.
+ * Les autres ids restent pour lire d’anciens projets (rétrocompatibilité).
+ */
 export type ProjectTypeId =
   | "licence"
   | "m1"
@@ -17,6 +22,19 @@ export type ProjectTypeId =
   | "reading_sheet"
   | "other";
 
+/** Types proposés dans les sélecteurs (cadrage, sujets). */
+export const ACTIVE_PROJECT_TYPE_IDS = [
+  "licence",
+  "m1",
+  "m2",
+  "pro",
+  "thesis",
+  "article",
+  "book",
+] as const satisfies readonly ProjectTypeId[];
+
+export type ActiveProjectTypeId = (typeof ACTIVE_PROJECT_TYPE_IDS)[number];
+
 export type DocumentKind = "research_project" | "work_plan";
 
 export const DOCUMENT_KIND_LABELS: Record<DocumentKind, string> = {
@@ -29,14 +47,14 @@ export const PROJECT_TYPE_LABELS: Record<ProjectTypeId, string> = {
   m1: "Mémoire recherche M1",
   m2: "Mémoire recherche M2",
   pro: "Mémoire professionnel",
-  internship: "Rapport de stage",
+  internship: "Rapport de stage", // legacy
   thesis: "Thèse",
-  article: "Article scientifique",
+  article: "Article scientifique / chapitre d’ouvrage",
   book: "Livre",
-  talk: "Communication", // conservé pour archives anciennes
-  research_dossier: "Dossier de recherche",
-  reading_sheet: "Fiche de lecture",
-  other: "Autre projet académique",
+  talk: "Communication orale", // legacy
+  research_dossier: "Dossier de recherche", // legacy
+  reading_sheet: "Fiche de lecture", // legacy
+  other: "Autre projet académique", // legacy
 };
 
 /** Libellé du document principal selon le type (pas toujours « projet de recherche »). */

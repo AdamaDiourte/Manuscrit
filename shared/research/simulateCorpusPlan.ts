@@ -28,11 +28,18 @@ export type SimulatedEvidence = {
   end: number;
 };
 
+export type SimulatedSubsection = {
+  title: string;
+  advice: string;
+  evidence: SimulatedEvidence[];
+};
+
 export type SimulatedSection = {
   title: string;
   advice: string;
   evidence: SimulatedEvidence[];
   role?: PhaseRole;
+  subsections?: SimulatedSubsection[];
 };
 
 /**
@@ -99,7 +106,12 @@ export function simulateCorpusPlan(input: {
   endDate?: string;
   weeklyTime?: string;
   sources?: SimulatedSource[];
-  writingStructure?: { title: string; intent: string; role?: PhaseRole }[];
+  writingStructure?: {
+    title: string;
+    intent: string;
+    role?: PhaseRole;
+    subsections?: { title: string; intent: string }[];
+  }[];
   revisionFeedback?: string;
   previousPlan?: { title: string; advice: string }[];
 }) {
@@ -168,6 +180,47 @@ export function simulateCorpusPlan(input: {
             } »).`
           : "Appuyez-vous sur la présentation du sujet déclarée dans le cadrage."
         : "";
+    const subsections: SimulatedSubsection[] | undefined = step.subsections
+      ?.length
+      ? step.subsections.map((sub, j) => {
+          const subSource = sources.length
+            ? sources[(i + j + 1) % sources.length]
+            : null;
+          let subSpan: ReturnType<typeof pickQuoteSpan> = null;
+          if (subSource) {
+            const used = sourceUseCount.get(subSource.id) || 0;
+            sourceUseCount.set(subSource.id, used + 1);
+            subSpan = pickQuoteSpan(
+              subSource.text,
+              220,
+              used * 260 + (i + 1) * 48 + j * 30,
+            );
+          }
+          const subRef = subSource
+            ? subSource.code || subSource.title || "matériau déposé"
+            : ref;
+          return {
+            title: sub.title,
+            advice: [
+              sub.intent,
+              `Mobilisez notamment ${subRef} pour illustrer cette sous-partie.`,
+            ]
+              .filter(Boolean)
+              .join(" "),
+            evidence:
+              subSource && subSpan
+                ? [
+                    {
+                      id: subSource.id,
+                      quote: subSpan.quote,
+                      start: subSpan.start,
+                      end: subSpan.end,
+                    },
+                  ]
+                : ([] as SimulatedEvidence[]),
+          };
+        })
+      : undefined;
     return {
       title: step.title,
       ...(step.role ? { role: step.role } : {}),
@@ -181,14 +234,26 @@ export function simulateCorpusPlan(input: {
           : "",
         prev,
         briefLine,
-        `Mobilisez notamment ${ref} pour illustrer le propos ; laissez à l’auteur le choix des passages définitifs.`,
+        subsections?.length
+          ? "Développez via les sous-parties ci-dessous."
+          : `Mobilisez notamment ${ref} pour illustrer le propos ; laissez à l’auteur le choix des passages définitifs.`,
       ]
         .filter(Boolean)
         .join(" "),
       evidence:
-        source && span
-          ? [{ id: source.id, quote: span.quote, start: span.start, end: span.end }]
-          : ([] as SimulatedEvidence[]),
+        subsections?.length
+          ? ([] as SimulatedEvidence[])
+          : source && span
+            ? [
+                {
+                  id: source.id,
+                  quote: span.quote,
+                  start: span.start,
+                  end: span.end,
+                },
+              ]
+            : ([] as SimulatedEvidence[]),
+      ...(subsections?.length ? { subsections } : {}),
     };
   });
 
@@ -218,6 +283,23 @@ export function simulateCorpusPlan(input: {
         endDate: input.endDate,
       });
 
+  const totalUnits = sources.length;
+  const coverage = {
+    totalUnits,
+    done: totalUnits,
+    failed: 0,
+    skipped: 0,
+    perMaterial: sources.map((s) => ({
+      materialId: s.id,
+      total: 1,
+      done: 1,
+      failed: 0,
+      skipped: 0,
+      pending: 0,
+    })),
+    complete: totalUnits > 0,
+  };
+
   return {
     comparisons: [] as unknown[],
     sections,
@@ -239,5 +321,15 @@ export function simulateCorpusPlan(input: {
     model: "simulation",
     simulated: true as const,
     revisionFeedback: revision || undefined,
+    coverage,
+    units: sources.map((s, i) => ({
+      id: `sim-unit-${i}-${s.id.slice(0, 8)}`,
+      materialId: s.id,
+      kind: "text" as const,
+      start: 0,
+      end: Math.min(220, s.text.length),
+      label: `Simulation · ${s.title || s.id}`,
+      text: s.text.slice(0, 220),
+    })),
   };
 }

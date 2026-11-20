@@ -6,6 +6,7 @@ export type PassagePayload = {
   quote: string;
   start?: number;
   end?: number;
+  source?: string;
 };
 
 /** Localise un extrait même si les espaces ont été normalisés. */
@@ -164,6 +165,11 @@ export default function SourcePassageDialog({ reading, onClose }: Props) {
             </span>
           )}
         </div>
+        {reading.source === "transcription-ia" && (
+          <p className="passage-transcription-note" role="note">
+            Transcription automatique — à vérifier sur l’original
+          </p>
+        )}
 
         <SourcePassage
           text={text}

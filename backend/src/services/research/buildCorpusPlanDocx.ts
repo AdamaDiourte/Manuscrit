@@ -1,11 +1,13 @@
 import { Document, Packer, Paragraph, Table } from "docx";
 import type { WorkPlan } from "../../../../shared/research/workPlan";
+import { genreProfileFor } from "../../../../shared/research/genreProfiles";
 import {
   DOC_CAUTION,
   DOC_MARGINS,
   docBody,
   docBullet,
   docHeading,
+  docHeading2,
   docItalic,
   docQuote,
   docSourceLine,
@@ -21,10 +23,28 @@ import {
   planningSubtitle,
 } from "./buildWorkPlanDocxParts";
 
+type PlanEvidence = {
+  id?: string;
+  quote?: string;
+  code?: string;
+  title?: string;
+  source?: string;
+  stance?: string;
+};
+
+type PlanSubsection = {
+  title?: string;
+  thesis?: string;
+  advice?: string;
+  evidence?: PlanEvidence[];
+};
+
 type PlanSection = {
   title?: string;
   advice?: string;
-  evidence?: { id?: string; quote?: string; code?: string; title?: string }[];
+  thesis?: string;
+  evidence?: PlanEvidence[];
+  subsections?: PlanSubsection[];
 };
 
 export type PlanDocKind = "plan" | "schedule";
@@ -33,11 +53,20 @@ type PlanInput = {
   kind?: PlanDocKind;
   projectTitle?: string;
   documentLabel?: string;
+  /** Id de type de support (bornes preuves du profil). */
+  documentType?: string;
   simulated?: boolean;
   date?: string;
   model?: string;
   sections?: PlanSection[];
   gaps?: string[];
+  themes?: {
+    themeId?: string;
+    label?: string;
+    emergent?: boolean;
+    fragile?: boolean;
+    materialCount?: number;
+  }[];
   schedule?: {
     label?: string;
     totalDays?: number;
@@ -164,19 +193,33 @@ export async function buildCorpusPlanDocx(plan: PlanInput): Promise<{
   );
 
   const annexRows: string[][] = [];
+  const evidenceCap = Math.max(
+    1,
+    genreProfileFor(plan.documentType).preuvesParSection.max,
+  );
 
-  (plan.sections || []).forEach((section, i) => {
-    const sectionTitle = section.title || "Section";
-    children.push(docHeading(`${i + 1}. ${sectionTitle}`));
-    if (section.advice) children.push(docBody(section.advice, 100));
-    const evidence = (section.evidence || []).filter((ev) =>
-      String(ev.quote || "").trim(),
-    );
-    const shown = evidence.slice(0, 3);
-    const omitted = evidence.length - shown.length;
+  function appendEvidence(
+    evidence: PlanEvidence[],
+    sectionLabel: string,
+    cap: number,
+  ) {
+    const list = evidence.filter((ev) => String(ev.quote || "").trim());
+    const shown = list.slice(0, cap);
+    const omitted = list.length - shown.length;
     for (const ev of shown) {
       const quote = String(ev.quote || "").trim();
       children.push(docQuote(quote));
+      if (ev.stance === "contredit" || ev.stance === "nuance") {
+        children.push(docItalic("Contre-exemple", 40));
+      }
+      if (ev.source === "transcription-ia") {
+        children.push(
+          docItalic(
+            "Transcription automatique — à vérifier sur l’original",
+            60,
+          ),
+        );
+      }
       const ref = [ev.code, ev.title].filter(Boolean).join(" · ");
       if (ref) children.push(docSourceLine(ref));
     }
@@ -188,18 +231,83 @@ export async function buildCorpusPlanDocx(plan: PlanInput): Promise<{
         ),
       );
     }
-    for (const ev of evidence) {
+    for (const ev of list) {
       const quote = String(ev.quote || "").trim().replace(/\s+/g, " ");
       const preview =
         quote.length > 120 ? `${quote.slice(0, 117).trimEnd()}…` : quote;
       annexRows.push([
         String(ev.code || "—"),
         String(ev.title || "—"),
-        sectionTitle,
+        sectionLabel,
         preview,
       ]);
     }
+  }
+
+  (plan.sections || []).forEach((section, i) => {
+    const sectionTitle = section.title || "Section";
+    children.push(docHeading(`${i + 1}. ${sectionTitle}`));
+    if (section.thesis) children.push(docItalic(section.thesis, 80));
+    const sectionMats = new Set(
+      [
+        ...(section.evidence || []).map((e) => e.id),
+        ...(section.subsections || []).flatMap((sub) =>
+          (sub.evidence || []).map((e) => e.id),
+        ),
+      ].filter(Boolean),
+    );
+    if (sectionMats.size)
+      children.push(
+        docItalic(
+          `Appuyé par ${sectionMats.size} matériau${sectionMats.size !== 1 ? "x" : ""}`,
+          60,
+        ),
+      );
+    if (section.advice) children.push(docBody(section.advice, 100));
+    const subs = section.subsections || [];
+    if (subs.length) {
+      subs.forEach((sub, j) => {
+        const subTitle = sub.title || `Sous-partie ${j + 1}`;
+        children.push(docHeading2(`${i + 1}.${j + 1}. ${subTitle}`));
+        if (sub.thesis) children.push(docItalic(sub.thesis, 60));
+        const subMats = new Set(
+          (sub.evidence || []).map((e) => e.id).filter(Boolean),
+        );
+        if (subMats.size)
+          children.push(
+            docItalic(
+              `Appuyé par ${subMats.size} matériau${subMats.size !== 1 ? "x" : ""}`,
+              40,
+            ),
+          );
+        if (sub.advice) children.push(docBody(sub.advice, 80));
+        appendEvidence(
+          sub.evidence || [],
+          `${sectionTitle} › ${subTitle}`,
+          evidenceCap,
+        );
+      });
+    } else {
+      appendEvidence(section.evidence || [], sectionTitle, evidenceCap);
+    }
   });
+
+  if (plan.themes?.length) {
+    children.push(docHeading("Thèmes repérés"));
+    for (const t of plan.themes) {
+      const badges = [
+        t.emergent ? "Émergent" : "",
+        t.fragile ? "Fragile : une seule source" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      children.push(
+        docBullet(
+          `${t.label || "Thème"}${badges ? ` — ${badges}` : ""}`,
+        ),
+      );
+    }
+  }
 
   if (plan.gaps?.length) {
     children.push(docHeading("Points à vérifier"));

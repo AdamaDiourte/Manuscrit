@@ -10,6 +10,17 @@ import {
 } from "./documentStructures";
 import type { PhaseRole } from "./workPlan";
 
+/** Consignes spécifiques (établissement, directeur, revue, éditeur). */
+export const SPECIFIC_INSTRUCTIONS_MAX = 1000;
+
+export type WritingStructureSection = {
+  title: string;
+  intent: string;
+  role?: PhaseRole;
+  /** Sous-parties indicatives si le profil de support les prévoit. */
+  subsections?: { title: string; intent: string }[];
+};
+
 /** Ordre : projet → avertissement → dépôt matériaux → cadrage → plan IA. */
 export const CORPUS_STEPS = [
   "project",
@@ -45,6 +56,7 @@ export const COLLECTION_MODE_OPTIONS = [
   { value: "other", label: "Autres" },
 ] as const;
 
+/** Sélecteurs UI — périmètre produit uniquement (pas les types legacy). */
 export const DOCUMENT_TYPE_GROUPS: {
   label: string;
   options: { value: ProjectTypeId; label: string }[];
@@ -60,19 +72,10 @@ export const DOCUMENT_TYPE_GROUPS: {
     ],
   },
   {
-    label: "Article, livre, dossier et fiche",
+    label: "Article, chapitre et livre",
     options: [
       { value: "article", label: PROJECT_TYPE_LABELS.article },
       { value: "book", label: PROJECT_TYPE_LABELS.book },
-      { value: "research_dossier", label: PROJECT_TYPE_LABELS.research_dossier },
-      { value: "reading_sheet", label: PROJECT_TYPE_LABELS.reading_sheet },
-    ],
-  },
-  {
-    label: "Autres",
-    options: [
-      { value: "internship", label: PROJECT_TYPE_LABELS.internship },
-      { value: "other", label: PROJECT_TYPE_LABELS.other },
     ],
   },
 ];
@@ -130,11 +133,15 @@ export const WRITING_TIME_OPTIONS = [
 export const BRIEF_MIN_CHARS = 80;
 export const BRIEF_MAX_CHARS = 2000;
 
-/** Architecture de rédaction typique selon le genre — progressive, du cadrage à la synthèse. */
+/**
+ * Architecture typique selon le genre — alignée sur GENRE_PROFILES
+ * (nombre de sections / sous-parties dans les bornes du profil).
+ */
 export const WRITING_STRUCTURES: Record<
   ProjectTypeId,
-  { title: string; intent: string; role?: PhaseRole }[]
+  WritingStructureSection[]
 > = {
+  /** 3–6 sections, sans sous-parties. */
   licence: [
     {
       title: "Introduction et mise en contexte",
@@ -142,31 +149,25 @@ export const WRITING_STRUCTURES: Record<
       role: "intro",
     },
     {
-      title: "Problématique et hypothèses",
-      intent: "Formuler la question directrice de façon réaliste pour une licence.",
+      title: "Problématique et notions clés",
+      intent:
+        "Question simple et délimitée ; notions indispensables, sans surcharger.",
       role: "problem",
     },
     {
-      title: "Repères théoriques ou notions clés",
-      intent: "Introduire les outils conceptuels nécessaires, sans surcharger.",
-      role: "theory",
-    },
-    {
-      title: "Présentation des matériaux et de la méthode",
-      intent: "Expliquer comment les données ont été recueillies et seront lues.",
-      role: "method",
-    },
-    {
-      title: "Analyses progressives des matériaux",
-      intent: "Du constat simple au croisement plus exigeant, en citant le corpus.",
+      title: "Matériaux, méthode et analyses",
+      intent:
+        "Décrire modestement la méthode puis analyser le corpus du simple au croisé.",
       role: "analysis",
     },
     {
       title: "Discussion, limites et conclusion",
-      intent: "Synthétiser sans inventer ; ouvrir sur ce que les données ne couvrent pas.",
+      intent:
+        "Synthétiser sans inventer ; l’enjeu est la rigueur, pas l’originalité.",
       role: "discussion",
     },
   ],
+  /** 4–8 sections, sans sous-parties. */
   m1: [
     {
       title: "Introduction et enjeux",
@@ -180,25 +181,27 @@ export const WRITING_STRUCTURES: Record<
     },
     {
       title: "Cadre théorique et état des lieux",
-      intent: "Mobiliser notes de lecture / références déposées uniquement.",
+      intent: "État de l’art solide à partir des notes / références déposées.",
       role: "theory",
     },
     {
-      title: "Dispositif méthodologique",
-      intent: "Lier méthode et matériaux réellement disponibles.",
+      title: "Dispositif méthodologique et terrain exploratoire",
+      intent: "Lier méthode et matériaux ; posture réflexive sur l’enquête.",
       role: "method",
     },
     {
       title: "Analyses empiriques structurées",
-      intent: "Progression simple → complexe ; chaque partie ancrée dans des extraits.",
+      intent:
+        "Résultats pouvant être préliminaires ; progression simple → complexe.",
       role: "analysis",
     },
     {
-      title: "Discussion et conclusion",
-      intent: "Recouper résultats, limites et apports au regard des données.",
+      title: "Discussion, perspectives et conclusion",
+      intent: "Limites, apports et perspectives pour la suite (souvent le M2).",
       role: "discussion",
     },
   ],
+  /** 6–10 sections, sans sous-parties. */
   m2: [
     {
       title: "Introduction et contribution attendue",
@@ -207,12 +210,12 @@ export const WRITING_STRUCTURES: Record<
     },
     {
       title: "Problématique et hypothèses",
-      intent: "Exigence analytique tenable avec le corpus déposé.",
+      intent: "Problématique originale ; hypothèses explicites.",
       role: "problem",
     },
     {
       title: "Cadre théorique et revue documentaire",
-      intent: "S’appuyer sur les notes / références fournies, sans inventer.",
+      intent: "Cadre articulé à l’enquête, sans inventer de références.",
       role: "theory",
     },
     {
@@ -221,48 +224,60 @@ export const WRITING_STRUCTURES: Record<
       role: "method",
     },
     {
-      title: "Résultats et analyses croisées",
-      intent: "Organiser les constats du simple au complexe, multi-matériaux si pertinent.",
+      title: "Résultats empiriques",
+      intent: "Enquête complète ; constats ordonnés et ancrés.",
+      role: "fieldwork",
+    },
+    {
+      title: "Analyses croisées",
+      intent: "Du simple au complexe ; multi-matériaux si pertinent.",
       role: "analysis",
     },
     {
-      title: "Discussion, limites, perspectives",
-      intent: "Déduire strictement des preuves déposées.",
+      title: "Discussion avec la littérature",
+      intent: "Analyse argumentée au regard des travaux cités dans le corpus.",
       role: "discussion",
     },
+    {
+      title: "Limites, perspectives et conclusion",
+      intent: "Apports, limites et ouvertures — sans hallucination.",
+      role: "conclusion",
+    },
   ],
+  /** 5–8 sections : contexte → diagnostic → analyse → préconisations. */
   pro: [
     {
       title: "Contexte professionnel et besoin",
-      intent: "Situer la commande ou la mission sans inventer d’organisation.",
+      intent: "Situer l’organisation et la commande sans inventer.",
       role: "intro",
     },
     {
       title: "Problématique professionnelle",
-      intent: "Question utile et analysable avec les données fournies.",
+      intent: "Problème issu de l’organisation, analysable avec les données.",
       role: "problem",
     },
     {
-      title: "Cadre d’analyse",
-      intent: "Grilles et notions adaptées au double lectorat.",
+      title: "Cadre d’analyse (théorie–pratique)",
+      intent: "Lien explicite entre grilles théoriques et pratique.",
       role: "theory",
     },
     {
-      title: "Démarche et matériaux",
-      intent: "Montrer comment les pièces déposées alimentent le raisonnement.",
+      title: "Diagnostic à partir des matériaux",
+      intent: "Démarche et pièces déposées ; vigilance confidentialité.",
       role: "method",
     },
     {
-      title: "Analyses et constats opérationnels",
-      intent: "Progression claire, preuves citées, recommandations ancrées.",
+      title: "Analyse et constats opérationnels",
+      intent: "Progression claire, preuves citées.",
       role: "analysis",
     },
     {
-      title: "Livrables, limites et conclusion",
-      intent: "Ce que le mémoire peut raisonnablement produire.",
+      title: "Préconisations, limites et conclusion",
+      intent: "Recommandations ancrées ; ce que le mémoire peut produire.",
       role: "conclusion",
     },
   ],
+  /** 5–8 sections : même logique professionnelle. */
   internship: [
     {
       title: "Contexte de la structure et du stage",
@@ -270,13 +285,18 @@ export const WRITING_STRUCTURES: Record<
       role: "intro",
     },
     {
-      title: "Mission, objectifs et problématique du rapport",
-      intent: "Relier activités et question de rapport.",
+      title: "Mission, objectifs et problématique",
+      intent: "Relier activités et question du rapport.",
       role: "problem",
     },
     {
-      title: "Méthode de travail sur le terrain",
-      intent: "Outils et observations effectivement documentés.",
+      title: "Repères d’analyse (théorie–pratique)",
+      intent: "Lien explicite entre cadres et pratique de stage.",
+      role: "theory",
+    },
+    {
+      title: "Diagnostic et méthode de terrain",
+      intent: "Outils et observations documentés ; confidentialité.",
       role: "fieldwork",
     },
     {
@@ -285,119 +305,218 @@ export const WRITING_STRUCTURES: Record<
       role: "analysis",
     },
     {
-      title: "Bilan, apprentissages et perspectives",
-      intent: "Synthèse sans rédaction à la place de l’auteur.",
+      title: "Préconisations, bilan et perspectives",
+      intent: "Livrables réalistes sans rédaction à la place de l’auteur.",
       role: "conclusion",
     },
   ],
+  /** 6–10 chapitres avec 2–4 sous-parties. */
   thesis: [
     {
-      title: "Positionnement et introduction générale",
-      intent: "Enjeu scientifique et fil directeur de la thèse.",
+      title: "Introduction générale",
+      intent:
+        "État de l’art, problématique, terrain, méthode, annonce du plan ; contribution originale.",
       role: "intro",
+      subsections: [
+        { title: "Enjeu et état de l’art", intent: "Situer la contribution." },
+        {
+          title: "Problématique, terrain et méthode",
+          intent: "Annoncer le dispositif et le plan.",
+        },
+      ],
     },
     {
-      title: "Problématique, hypothèses et questions",
-      intent: "Niveau doctoral, mais ancré dans le corpus disponible.",
-      role: "problem",
-    },
-    {
-      title: "État de l’art et cadre théorique",
-      intent: "Uniquement à partir des références / notes déposées.",
+      title: "Cadre théorique",
+      intent: "Concepts et débats mobilisés, ancrés dans les notes déposées.",
       role: "theory",
+      subsections: [
+        { title: "Concepts structurants", intent: "Définir et articuler." },
+        { title: "Débats et positionnement", intent: "Situer l’apport." },
+      ],
     },
     {
       title: "Dispositif empirique",
-      intent: "Matériaux, critères et limites du terrain documenté.",
+      intent: "Matériaux, critères, limites ; thèse sur articles si signalée.",
       role: "method",
+      subsections: [
+        { title: "Corpus et critères", intent: "Décrire le réel disponible." },
+        { title: "Limites du dispositif", intent: "Assumer ce qui manque." },
+      ],
     },
     {
-      title: "Chapitres d’analyse progressive",
-      intent: "Architecture argumentative simple → complexe, preuves citées.",
+      title: "Chapitre empirique 1",
+      intent: "Premier volet d’analyse progressive.",
       role: "analysis",
+      subsections: [
+        { title: "Constat", intent: "Ce que montrent les matériaux." },
+        { title: "Interprétation", intent: "Lien avec les hypothèses." },
+      ],
     },
     {
-      title: "Discussion générale et conclusion",
-      intent: "Apports, limites, ouverture — sans hallucination.",
+      title: "Chapitre empirique 2",
+      intent: "Deuxième volet ; croiser et complexifier.",
+      role: "analysis",
+      subsections: [
+        { title: "Convergences", intent: "Ce qui se confirme." },
+        { title: "Tensions", intent: "Contre-exemples et nuances." },
+      ],
+    },
+    {
+      title: "Chapitre empirique 3",
+      intent: "Approfondissement et synthèse partielle.",
+      role: "analysis",
+      subsections: [
+        { title: "Cas ou axes croisés", intent: "Monter en généralité." },
+        { title: "Discussion intermédiaire", intent: "Préparer la conclusion." },
+      ],
+    },
+    {
+      title: "Discussion générale",
+      intent: "Apports au regard de la littérature et des hypothèses.",
       role: "discussion",
+      subsections: [
+        { title: "Apports", intent: "Ce que la thèse établit." },
+        { title: "Limites", intent: "Ce qui reste hors cadre." },
+      ],
+    },
+    {
+      title: "Conclusion générale",
+      intent: "Apports, limites et perspectives.",
+      role: "conclusion",
+      subsections: [
+        { title: "Bilan", intent: "Répondre à la question de recherche." },
+        { title: "Perspectives", intent: "Ouvertures raisonnables." },
+      ],
     },
   ],
+  /** 5–8 sections ; sous-parties surtout pour les résultats. */
   article: [
     {
-      title: "Introduction et enjeu",
-      intent: "Accroche scientifique courte, ancrée dans le sujet déclaré.",
+      title: "Introduction : lacune et apport",
+      intent: "Argument central, lacune dans la littérature, contribution claire.",
       role: "intro",
     },
     {
-      title: "Cadre et revue ciblée",
-      intent: "Mobiliser les notes / références fournies seulement.",
+      title: "Littérature ciblée",
+      intent: "Revue sélective autour de la lacune.",
       role: "theory",
     },
     {
-      title: "Méthode et corpus",
-      intent: "Transparence sur les matériaux réellement analysables.",
+      title: "Méthode et données",
+      intent: "Protocole et corpus concis (IMRD ou plan argumentatif selon la discipline).",
       role: "method",
     },
     {
       title: "Résultats",
-      intent: "Constats ordonnés, chaque affirmation liée à une preuve.",
+      intent: "2 à 3 sous-parties de résultats ; matériaux les plus probants seulement.",
       role: "analysis",
+      subsections: [
+        { title: "Résultat 1", intent: "Premier constat ancré." },
+        { title: "Résultat 2", intent: "Deuxième constat ou nuance." },
+        { title: "Résultat 3 (optionnel)", intent: "Approfondissement si pertinent." },
+      ],
     },
     {
-      title: "Discussion et conclusion",
-      intent: "Portée, limites, pistes — sans inventer de données.",
+      title: "Discussion",
+      intent: "Portée, limites, dialogue avec la littérature.",
       role: "discussion",
     },
+    {
+      title: "Conclusion",
+      intent: "Apport résumé et pistes — sans inventer de données.",
+      role: "conclusion",
+    },
   ],
+  /** 6–12 chapitres avec 2–4 sous-parties. */
   book: [
     {
-      title: "Ouverture et promesse du livre",
-      intent: "Situer le sujet, le lectorat et le fil conducteur sans rédiger le manuscrit.",
+      title: "Ouverture : enjeu et promesse",
+      intent: "Accrocher un lectorat plus large que le jury ; poser le fil directeur.",
       role: "intro",
+      subsections: [
+        { title: "Scène ou cas d’ouverture", intent: "Accroche narrative." },
+        { title: "Enjeu et promesse du livre", intent: "Ce que le lecteur gagnera." },
+      ],
     },
     {
-      title: "Problématique et architecture argumentative",
-      intent: "Clarifier ce que le livre doit démontrer, chapitre après chapitre.",
+      title: "Fil conducteur et question",
+      intent: "Clarifier l’argument central chapitre après chapitre.",
       role: "problem",
+      subsections: [
+        { title: "Question directrice", intent: "Formuler sans jargon excessif." },
+        { title: "Architecture du livre", intent: "Annoncer le parcours." },
+      ],
     },
     {
-      title: "Repères, lectures et corpus",
-      intent: "Organiser les matériaux et références qui nourriront les chapitres.",
+      title: "Repères et lectures",
+      intent: "Repères utiles ; appareil méthodologique allégé.",
       role: "theory",
+      subsections: [
+        { title: "Repères conceptuels", intent: "Notions pour le lecteur." },
+        { title: "Corpus et sources", intent: "Ce qui nourrit les chapitres." },
+      ],
     },
     {
-      title: "Chapitres de développement",
-      intent: "Progression du simple au complexe, chaque partie ancrée dans des preuves.",
+      title: "Chapitre de développement 1",
+      intent: "Premier volet ; récit ou cas illustratif.",
       role: "analysis",
+      subsections: [
+        { title: "Cas ou récit", intent: "Illustration concrète." },
+        { title: "Lecture", intent: "Ce que le cas montre." },
+      ],
     },
     {
-      title: "Transitions, synthèse et conclusion",
-      intent: "Assurer la cohérence d’ensemble et les limites du propos.",
+      title: "Chapitre de développement 2",
+      intent: "Deuxième volet ; monter en complexité.",
+      role: "analysis",
+      subsections: [
+        { title: "Cas ou récit", intent: "Deuxième illustration." },
+        { title: "Croisement", intent: "Lien avec le fil directeur." },
+      ],
+    },
+    {
+      title: "Chapitre de développement 3",
+      intent: "Troisième volet ; tensions et nuances.",
+      role: "analysis",
+      subsections: [
+        { title: "Tensions", intent: "Ce qui résiste." },
+        { title: "Synthèse partielle", intent: "Avancer l’argument." },
+      ],
+    },
+    {
+      title: "Synthèse et conclusion",
+      intent: "Cohérence d’ensemble, limites du propos, ouverture.",
       role: "discussion",
+      subsections: [
+        { title: "Bilan", intent: "Ce que le livre établit." },
+        { title: "Limites et ouvertures", intent: "Honnêteté et perspectives." },
+      ],
     },
   ],
+  /** 3–5 parties, sans sous-parties. */
   talk: [
     {
-      title: "Accroche et enjeu",
-      intent: "Message central compréhensible rapidement.",
+      title: "Accroche et idée forte",
+      intent: "Message central compréhensible en quelques minutes.",
       role: "intro",
     },
     {
-      title: "Cadre et méthode",
+      title: "Cadre minimal",
       intent: "Repères indispensables avant les preuves.",
       role: "method",
     },
     {
-      title: "Résultats illustrés",
-      intent: "Quelques extraits forts du corpus, bien choisis.",
+      title: "Preuves illustrées",
+      intent: "1 à 2 extraits marquants seulement.",
       role: "analysis",
     },
     {
-      title: "Ouverture et discussion",
-      intent: "Ce que l’auditoire doit retenir.",
+      title: "Ouverture pour l’auditoire",
+      intent: "Ce qu’il faut retenir ; discussion courte.",
       role: "discussion",
     },
   ],
+  /** Profils courts, sans sous-parties. */
   research_dossier: [
     {
       title: "Présentation du dossier et du sujet",
@@ -405,17 +524,12 @@ export const WRITING_STRUCTURES: Record<
       role: "intro",
     },
     {
-      title: "Problématique et angles d’analyse",
+      title: "Angles d’analyse et matériaux",
       intent: "Questions guidant la lecture des pièces.",
       role: "problem",
     },
     {
-      title: "Matériaux et critères de sélection",
-      intent: "Pourquoi ces documents, comment les lire.",
-      role: "method",
-    },
-    {
-      title: "Analyses thématiques progressives",
+      title: "Analyses thématiques",
       intent: "Du simple au complexe, preuves citées.",
       role: "analysis",
     },
@@ -427,28 +541,23 @@ export const WRITING_STRUCTURES: Record<
   ],
   reading_sheet: [
     {
-      title: "Référence et contexte de lecture",
-      intent: "Identifier l’ouvrage ou l’article à partir des notes déposées.",
+      title: "Référence et contexte",
+      intent: "Identifier l’ouvrage à partir des notes déposées.",
       role: "intro",
     },
     {
-      title: "Thèse ou argument principal",
-      intent: "Reformuler sans inventer.",
-      role: "problem",
-    },
-    {
-      title: "Structure et notions clés",
-      intent: "Repères pour la fiche.",
+      title: "Thèse et notions clés",
+      intent: "Reformuler sans inventer le contenu.",
       role: "theory",
     },
     {
-      title: "Extraits à mobiliser et discussion critique",
-      intent: "Passages précis + lecture critique fondée.",
+      title: "Extraits et lecture critique",
+      intent: "Passages précis + discussion fondée.",
       role: "discussion",
     },
     {
-      title: "Liens avec le projet de l’auteur",
-      intent: "Utilité pour le manuscrit en cours.",
+      title: "Utilité pour le projet",
+      intent: "Liens avec le manuscrit en cours.",
       role: "conclusion",
     },
   ],
@@ -483,6 +592,21 @@ export type CorpusFrame = {
   disciplineOther?: string;
   specialty?: string;
   brief?: string;
+  /**
+   * Question de recherche (facultatif).
+   * Prioritaire sur `chosenTopic.research_question` dans ProjectContext.
+   */
+  researchQuestion?: string;
+  /**
+   * Éléments de cadrage optionnels (parcours « Organiser mon manuscrit »,
+   * indépendants du parcours sujet).
+   * Prioritaires sur `chosenTopic` dans ProjectContext.
+   */
+  workingTitle?: string;
+  /** Une hypothèse par ligne, ou tableau. */
+  hypotheses?: string | string[];
+  method?: string;
+  fieldOrCorpus?: string;
   expectedLength?: string;
   /** Temps de rédaction disponible (WRITING_TIME_OPTIONS). */
   writingTime?: string;
@@ -496,6 +620,11 @@ export type CorpusFrame = {
   collectionModesOther?: string;
   /** Précision libre si plusieurs modes sont combinés. */
   collectionCombinedNote?: string;
+  /**
+   * Consignes spécifiques (établissement, directeur, revue, éditeur).
+   * Texte libre ≤ SPECIFIC_INSTRUCTIONS_MAX ; primauté sur le profil générique.
+   */
+  specificInstructions?: string;
   corpusNoticeAccepted?: boolean;
   corpusAiAccepted?: boolean;
   corpusPrivacyAccepted?: boolean;
@@ -661,11 +790,23 @@ export function usableMaterials(
     extracted?: string;
     toolExtracted?: string;
     extra?: Record<string, unknown>;
+    /** Texte extrait externalisé (ObjectStore texts/). */
+    textStored?: boolean;
+    textLength?: number;
   }[],
   excluded: string[] = [],
 ) {
   return materials.filter((m) => {
     if (excluded.includes(m.id)) return false;
+    // Texte extrait externalisé (ObjectStore) : longueur connue ou simple flag.
+    if (m.textStored && Number(m.textLength) > 0) return true;
+    if (m.textStored) {
+      const local = [m.observation, m.text]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+      if (local) return true;
+    }
     const text = [
       m.observation,
       m.text,

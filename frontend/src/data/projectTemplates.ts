@@ -14,18 +14,19 @@ export const templates: Record<string, string[]> = {
     "Discussion",
     "Conclusion générale",
   ],
-  "Rapport d’enquête": [
-    "Question d’enquête",
-    "Terrain et méthode",
-    "Résultats",
-    "Synthèse et limites",
-  ],
   Article: ["Introduction", "Méthode", "Résultats", "Discussion et conclusion"],
   Livre: [
     "Ouverture et promesse",
     "Fil conducteur",
     "Chapitres de développement",
     "Synthèse et conclusion",
+  ],
+  /** Conservés pour d’anciens projets déjà créés. */
+  "Rapport d’enquête": [
+    "Question d’enquête",
+    "Terrain et méthode",
+    "Résultats",
+    "Synthèse et limites",
   ],
   Autre: [
     "Introduction",
@@ -39,10 +40,8 @@ export const templates: Record<string, string[]> = {
 export const PROJECT_MODEL_OPTIONS = [
   { value: "Mémoire", label: "Mémoire" },
   { value: "Thèse", label: "Thèse" },
-  { value: "Rapport d’enquête", label: "Rapport d’enquête" },
   { value: "Article", label: "Article" },
   { value: "Livre", label: "Livre" },
-  { value: "Autre", label: "Autre" },
 ] as const;
 
 export function projectTypeLabel(project: {

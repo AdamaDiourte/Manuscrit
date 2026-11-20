@@ -6,6 +6,7 @@ export async function downloadPlanDocx(input: {
   kind?: PlanDocKind;
   projectTitle: string;
   documentLabel?: string;
+  documentType?: string;
   plan: any;
   materials?: { id: string; title?: string; type?: string }[];
 }) {
@@ -16,6 +17,7 @@ export async function downloadPlanDocx(input: {
       kind: input.kind || "plan",
       projectTitle: input.projectTitle,
       documentLabel: input.documentLabel,
+      documentType: input.documentType,
       plan: input.plan,
       materials: input.materials,
     }),

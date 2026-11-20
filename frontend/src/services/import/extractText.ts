@@ -1,8 +1,29 @@
 import { checkTextSize, MAX_FILE_BYTES } from "./limits";
 import { OfficeArchive } from "./officeArchive";
+import {
+  buildSheetStructure,
+  parseDelimited,
+  type TableSheetStructure,
+} from "../../../../shared/research/tableStats";
 
 export { MAX_TEXT } from "./limits";
 export const fileAccept = ".txt,.md,.csv,.tsv,.pdf,.docx,.xlsx";
+
+export type ExtractionStatus =
+  | "ok"
+  | "empty"
+  | "unsupported"
+  | "scanned"
+  | "error";
+
+export type ExtractDocumentResult = {
+  text: string;
+  status: ExtractionStatus;
+  message?: string;
+  tables?: TableSheetStructure[];
+  pdfPageCount?: number;
+  scanned?: boolean;
+};
 
 const elements = (root: Document | Element, name: string) =>
   Array.from(root.getElementsByTagNameNS("*", name));
@@ -36,7 +57,23 @@ async function extractWord(archive: OfficeArchive) {
     .join("\n");
 }
 
-async function extractWorkbook(archive: OfficeArchive) {
+function cellRefCol(ref: string): number {
+  const m = /^([A-Z]+)/i.exec(ref || "");
+  if (!m) return 0;
+  let n = 0;
+  for (const ch of m[1].toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return Math.max(0, n - 1);
+}
+
+function cellRefRow(ref: string): number {
+  const m = /(\d+)$/.exec(ref || "");
+  return m ? Math.max(0, Number(m[1]) - 1) : 0;
+}
+
+async function extractWorkbook(archive: OfficeArchive): Promise<{
+  text: string;
+  tables: TableSheetStructure[];
+}> {
   const workbook = await archive.xml("xl/workbook.xml");
   const relationships = await archive.xml("xl/_rels/workbook.xml.rels");
   const paths = new Map(
@@ -52,6 +89,7 @@ async function extractWorkbook(archive: OfficeArchive) {
       )
     : [];
   const result: string[] = [];
+  const tables: TableSheetStructure[] = [];
   let size = 0;
   for (const sheet of elements(workbook, "sheet")) {
     const relation = Array.from(sheet.attributes).find(
@@ -64,7 +102,11 @@ async function extractWorkbook(archive: OfficeArchive) {
       "https://archive.invalid/xl/workbook.xml",
     ).pathname.slice(1);
     const xml = await archive.xml(path);
-    result.push("Feuille « " + sheet.getAttribute("name") + " »");
+    const sheetName = sheet.getAttribute("name") || "Feuille";
+    result.push("Feuille « " + sheetName + " »");
+    const grid = new Map<string, string>();
+    let maxRow = -1;
+    let maxCol = -1;
     for (const row of elements(xml, "row")) {
       const cells: string[] = [];
       for (const cell of elements(row, "c")) {
@@ -88,7 +130,15 @@ async function extractWorkbook(archive: OfficeArchive) {
             "=" +
             formula +
             (value ? " [valeur enregistrée : " + value + "]" : "");
-        if (value) cells.push((cell.getAttribute("r") || "") + " = " + value);
+        const ref = cell.getAttribute("r") || "";
+        if (value) {
+          cells.push(ref + " = " + value);
+          const r = cellRefRow(ref);
+          const c = cellRefCol(ref);
+          grid.set(`${r}:${c}`, value);
+          maxRow = Math.max(maxRow, r);
+          maxCol = Math.max(maxCol, c);
+        }
       }
       if (cells.length) {
         const line = cells.join("\t");
@@ -97,13 +147,27 @@ async function extractWorkbook(archive: OfficeArchive) {
       }
     }
     result.push("");
+    if (maxRow >= 0 && maxCol >= 0) {
+      const matrix: string[][] = [];
+      for (let r = 0; r <= maxRow; r++) {
+        const row: string[] = [];
+        for (let c = 0; c <= maxCol; c++) row.push(grid.get(`${r}:${c}`) || "");
+        matrix.push(row);
+      }
+      const structure = buildSheetStructure(sheetName, matrix, true);
+      if (structure) tables.push(structure);
+    }
   }
   if (!size) throw new Error("Aucune cellule renseignée dans ce classeur.");
-  return result.join("\n");
+  return { text: result.join("\n"), tables };
 }
 
 // Mozilla PDF.js 5.6.205 is served from this site. No CDN receives the file.
-async function extractPdf(bytes: ArrayBuffer) {
+async function extractPdf(bytes: ArrayBuffer): Promise<{
+  text: string;
+  scanned: boolean;
+  pdfPageCount: number;
+}> {
   const moduleUrl = "/vendor/pdfjs/pdf.min.mjs";
   const pdf = await import(
     /* webpackIgnore: true */ /* @vite-ignore */ moduleUrl
@@ -154,37 +218,99 @@ async function extractPdf(bytes: ArrayBuffer) {
         "[Page " +
           index +
           "]\n" +
-          (text || "[Aucun texte extractible sur cette page]"),
+          (text || "[Aucun texte extractible sur cette page — analyse visuelle prévue]"),
       );
     }
-    if (!hasText)
-      throw new Error(
-        "Ce PDF ne contient pas de texte extractible. Fournissez une transcription ou un PDF avec reconnaissance de caractères.",
-      );
-    return parts.join("\n\n");
+    if (!hasText) {
+      return {
+        text: parts.join("\n\n"),
+        scanned: true,
+        pdfPageCount: doc.numPages,
+      };
+    }
+    return {
+      text: parts.join("\n\n"),
+      scanned: false,
+      pdfPageCount: doc.numPages,
+    };
   } finally {
     clearTimeout(timeout);
     await task.destroy();
   }
 }
 
-export async function extractText(file: File): Promise<string> {
+/**
+ * Extraction enrichie : texte + statut visible + structure tableaux éventuelle.
+ */
+export async function extractDocument(file: File): Promise<ExtractDocumentResult> {
   if (file.size > MAX_FILE_BYTES)
-    throw new Error("Le fichier dépasse la limite de 20 Mo.");
+    return {
+      text: "",
+      status: "error",
+      message: "Le fichier dépasse la limite de 20 Mo.",
+    };
+
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
-  if (!fileAccept.split(",").includes("." + ext)) {
-    throw new Error(
-      "Format sans extraction automatique. Ajoutez une transcription, une légende ou un export texte.",
-    );
-  }
+  const imageExt = ["png", "jpg", "jpeg", "webp", "gif"];
+  if (ext === "doc")
+    return {
+      text: "",
+      status: "unsupported",
+      message:
+        "Fichier .doc (ancien format Word) : extraction automatique indisponible. Convertissez en .docx ou ajoutez une transcription.",
+    };
+  if (imageExt.includes(ext))
+    return {
+      text: "",
+      status: "empty",
+      message:
+        "Image déposée : pas de texte extrait automatiquement. L’analyse visuelle sera proposée lors du plan ; ajoutez une observation si besoin.",
+    };
+  if (!fileAccept.split(",").includes("." + ext))
+    return {
+      text: "",
+      status: "unsupported",
+      message:
+        "Format sans extraction automatique. Ajoutez une transcription, une légende ou un export texte.",
+    };
+
   const bytes = await file.arrayBuffer();
-  let text: string;
   try {
-    if (ext === "pdf") text = await extractPdf(bytes);
-    else if (ext === "xlsx")
-      text = await extractWorkbook(new OfficeArchive(bytes));
-    else if (ext === "docx") text = await extractWord(new OfficeArchive(bytes));
-    else {
+    if (ext === "pdf") {
+      const pdf = await extractPdf(bytes);
+      const text = pdf.text.replace(/\r\n?/g, "\n").trim();
+      if (pdf.scanned)
+        return {
+          text,
+          status: "scanned",
+          scanned: true,
+          pdfPageCount: pdf.pdfPageCount,
+          message:
+            "PDF scanné (peu ou pas de texte extractible) : analyse visuelle page à page lors du plan de rédaction.",
+        };
+      checkTextSize(text.length);
+      return { text, status: "ok", pdfPageCount: pdf.pdfPageCount };
+    }
+    if (ext === "xlsx") {
+      const { text, tables } = await extractWorkbook(new OfficeArchive(bytes));
+      const normalized = text.replace(/\r\n?/g, "\n").trim();
+      checkTextSize(normalized.length);
+      return { text: normalized, status: "ok", tables };
+    }
+    if (ext === "docx") {
+      const text = (await extractWord(new OfficeArchive(bytes)))
+        .replace(/\r\n?/g, "\n")
+        .trim();
+      if (!text)
+        return {
+          text: "",
+          status: "empty",
+          message: "Le document ne contient aucun texte extractible.",
+        };
+      checkTextSize(text.length);
+      return { text, status: "ok" };
+    }
+    if (ext === "csv" || ext === "tsv") {
       const head = new Uint8Array(bytes, 0, Math.min(2, bytes.byteLength));
       const encoding =
         head[0] === 255 && head[1] === 254
@@ -192,17 +318,57 @@ export async function extractText(file: File): Promise<string> {
           : head[0] === 254 && head[1] === 255
             ? "utf-16be"
             : "utf-8";
+      const raw = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+      const text = raw.replace(/\r\n?/g, "\n").trim();
+      if (!text)
+        return {
+          text: "",
+          status: "empty",
+          message: "Le document ne contient aucun texte extractible.",
+        };
+      checkTextSize(text.length);
+      const matrix = parseDelimited(text, ext === "tsv" ? "\t" : ",");
+      const sheet = buildSheetStructure("Données", matrix, true);
+      return {
+        text,
+        status: "ok",
+        tables: sheet ? [sheet] : undefined,
+      };
+    }
+    {
+      const head = new Uint8Array(bytes, 0, Math.min(2, bytes.byteLength));
+      const encoding =
+        head[0] === 255 && head[1] === 254
+          ? "utf-16le"
+          : head[0] === 254 && head[1] === 255
+            ? "utf-16be"
+            : "utf-8";
+      let text: string;
       try {
         text = new TextDecoder(encoding, { fatal: true }).decode(bytes);
       } catch {
-        throw new Error(
-          "Encodage du texte illisible. Enregistrez le fichier en UTF-8.",
-        );
+        return {
+          text: "",
+          status: "error",
+          message: "Encodage du texte illisible. Enregistrez le fichier en UTF-8.",
+        };
       }
       if (text.includes("\u0000"))
-        throw new Error(
-          "Ce fichier ne semble pas être un texte. Vérifiez son format.",
-        );
+        return {
+          text: "",
+          status: "error",
+          message:
+            "Ce fichier ne semble pas être un texte. Vérifiez son format.",
+        };
+      text = text.replace(/\r\n?/g, "\n").trim();
+      if (!text)
+        return {
+          text: "",
+          status: "empty",
+          message: "Le document ne contient aucun texte extractible.",
+        };
+      checkTextSize(text.length);
+      return { text, status: "ok" };
     }
   } catch (error) {
     if (
@@ -211,14 +377,22 @@ export async function extractText(file: File): Promise<string> {
         error.message,
       )
     )
-      throw error;
-    throw new Error(
-      "Lecture du fichier impossible. Vérifiez qu’il est lisible et sans mot de passe, ou fournissez une transcription.",
-    );
+      return { text: "", status: "error", message: error.message };
+    return {
+      text: "",
+      status: "error",
+      message:
+        "Lecture du fichier impossible. Vérifiez qu’il est lisible et sans mot de passe, ou fournissez une transcription.",
+    };
   }
-  text = text.replace(/\r\n?/g, "\n").trim();
-  if (!text)
-    throw new Error("Le document ne contient aucun texte extractible.");
-  checkTextSize(text.length);
-  return text;
+}
+
+/** Compatibilité : renvoie le texte ou lève si échec bloquant. */
+export async function extractText(file: File): Promise<string> {
+  const result = await extractDocument(file);
+  if (result.status === "ok" || result.status === "scanned") return result.text;
+  throw new Error(
+    result.message ||
+      "Format sans extraction automatique. Ajoutez une transcription, une légende ou un export texte.",
+  );
 }

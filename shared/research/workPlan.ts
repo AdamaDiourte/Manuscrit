@@ -45,6 +45,16 @@ export const workPlanSectionSchema = z.object({
   advice: z.string().trim().max(4000).optional(),
   intent: z.string().trim().max(800).optional(),
   role: phaseRoleSchema.optional(),
+  subsections: z
+    .array(
+      z.object({
+        title: z.string().trim().min(1).max(220),
+        advice: z.string().trim().max(4000).optional(),
+        intent: z.string().trim().max(800).optional(),
+      }),
+    )
+    .max(4)
+    .optional(),
 });
 
 /**
@@ -85,6 +95,8 @@ export type WorkPlanSectionInput = {
   role?: PhaseRole;
   intent?: string;
   advice?: string;
+  /** Sous-parties (affichage pilotage uniquement — pas de ligne Gantt). */
+  subsections?: { title?: string; advice?: string; intent?: string }[];
 };
 
 export type WorkPlanInput = {
@@ -134,6 +146,8 @@ export type WorkPlanPhase = {
   deliverable: string;
   checkpoint: string;
   risk?: string;
+  /** Sous-parties pour le tableau de pilotage (pas de barre Gantt dédiée). */
+  subsections?: { title: string }[];
 };
 
 export type WorkPlan = {
@@ -620,6 +634,9 @@ export function buildWorkPlan(input: WorkPlanInput): WorkPlan | null {
       role === "fieldwork" || role === "analysis" || role === "discussion"
         ? ctx.risks?.[0]
         : undefined;
+    const subsections = (s.subsections || [])
+      .map((sub) => ({ title: String(sub.title || "").trim() }))
+      .filter((sub) => sub.title);
     return {
       index: i,
       sectionIndex: i,
@@ -637,6 +654,7 @@ export function buildWorkPlan(input: WorkPlanInput): WorkPlan | null {
       deliverable: copy.deliverable,
       checkpoint: copy.checkpoint,
       ...(risk ? { risk } : {}),
+      ...(subsections.length ? { subsections } : {}),
     };
   });
 

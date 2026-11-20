@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { materialCode, materialText } from "../../../../shared/research/project";
 import {
   BRIEF_MAX_CHARS,
@@ -8,6 +8,7 @@ import {
   DISCIPLINE_OPTIONS,
   DOCUMENT_TYPE_GROUPS,
   EXPECTED_LENGTH_OPTIONS,
+  SPECIFIC_INSTRUCTIONS_MAX,
   WRITING_TIME_OPTIONS,
   canRequestWritingPlan,
   documentTypeLabel,
@@ -21,6 +22,11 @@ import {
   type CorpusStep,
   disciplineLabel,
 } from "../../../../shared/research/corpusOrganization";
+import { estimateCorpusAnalysis } from "../../../../shared/research/estimateCorpus";
+import {
+  genreExpectationsSummary,
+  genreProfileFor,
+} from "../../../../shared/research/genreProfiles";
 import TopicSelect from "../topics/TopicSelect";
 import Attestation from "./Attestation";
 
@@ -48,6 +54,8 @@ type Props = {
   setSimulatePlan: (v: boolean) => void;
   query: string;
   setQuery: (v: string) => void;
+  preferBatch: boolean;
+  setPreferBatch: (v: boolean) => void;
   persist: (run: boolean) => Promise<boolean>;
   add: () => void;
   open: (m: any) => void;
@@ -55,6 +63,7 @@ type Props = {
   selectProject: (id: string) => void;
   onBack: () => void;
   goPrivacy: () => void;
+  goTopics: () => void;
   onAbandon: () => void;
   onPlanReady: () => void | Promise<void>;
   /** Étape ciblée (ex. cadrage éditable, matériaux) — évite le récap plan. */
@@ -94,6 +103,8 @@ export default function CorpusOrganizer({
   setSimulatePlan,
   query,
   setQuery,
+  preferBatch,
+  setPreferBatch,
   persist,
   add,
   open,
@@ -101,6 +112,7 @@ export default function CorpusOrganizer({
   selectProject,
   onBack,
   goPrivacy,
+  goTopics,
   onAbandon,
   onPlanReady,
   initialStep = null,
@@ -119,6 +131,45 @@ export default function CorpusOrganizer({
     () => usableMaterials(p.materials || [], excluded),
     [p.materials, excluded],
   );
+  const estimate = useMemo(
+    () => estimateCorpusAnalysis(usable),
+    [usable],
+  );
+  const [batchCapable, setBatchCapable] = useState(false);
+  const [batchThreshold, setBatchThreshold] = useState(800);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/research/capabilities", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setBatchCapable(Boolean(data.batch));
+        const n = Number(data.batchThreshold);
+        if (Number.isFinite(n) && n > 0) setBatchThreshold(Math.floor(n));
+      })
+      .catch(() => {
+        /* défaut : pas de mode lot */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const showBatchChoice =
+    !simulatePlan && batchCapable && estimate.units > batchThreshold;
+  useEffect(() => {
+    if (!showBatchChoice && preferBatch) setPreferBatch(false);
+  }, [showBatchChoice, preferBatch, setPreferBatch]);
+  const researchQuestion = String(draft.researchQuestion || "").trim();
+  const workingTitle = String(draft.workingTitle || "").trim();
+  const hypothesesText = Array.isArray(draft.hypotheses)
+    ? draft.hypotheses.join("\n")
+    : String(draft.hypotheses || "");
+  const hypothesesList = hypothesesText
+    .split(/\n+/)
+    .map((h: string) => h.trim())
+    .filter(Boolean);
+  const methodText = String(draft.method || "").trim();
+  const fieldOrCorpusText = String(draft.fieldOrCorpus || "").trim();
   const projectOk = projectIsReady(p, draft);
   const noticeOk = noticesAccepted(draft);
   const frameOk = frameIsComplete(draft);
@@ -297,12 +348,21 @@ export default function CorpusOrganizer({
             <ul className="corpus-notice-list">
               <li>
                 Assurez-vous que chaque document est <strong>anonyme</strong> ou{" "}
-                <strong>pseudonymisé</strong>.
+                <strong>pseudonymisé</strong>. Une pseudonymisation technique
+                optionnelle (e-mails, téléphones, noms fournis) est disponible
+                avant l’envoi à l’IA.
               </li>
               <li>
                 Ces matériaux seront analysés par l’IA{" "}
                 <strong>uniquement</strong> pour proposer un plan de rédaction
-                ancré dans vos données.
+                ancré dans vos données, par <strong>unités</strong> (passages,
+                tableaux, pages scannées).
+              </li>
+              <li>
+                Les <strong>images</strong>, graphiques et PDF scannés peuvent
+                être envoyés au fournisseur d’IA (vision) pour transcription ;
+                toute citation issue d’une transcription automatique est
+                signalée et à vérifier sur l’original.
               </li>
               <li>
                 Au-delà de cet usage, l’application{" "}
@@ -647,6 +707,88 @@ export default function CorpusOrganizer({
               {BRIEF_MIN_CHARS} caractères
             </span>
           </label>
+          <label>
+            Question de recherche (facultatif)
+            <textarea
+              rows={3}
+              maxLength={500}
+              value={draft.researchQuestion || ""}
+              placeholder="Formulez la question à laquelle votre manuscrit répond."
+              onChange={(e) => update("researchQuestion", e.target.value)}
+              aria-label="Question de recherche (facultatif)"
+            />
+            <span className="field-hint">
+              {(draft.researchQuestion || "").length} / 500
+            </span>
+          </label>
+          <fieldset className="corpus-optional-research">
+            <legend>Précisions pour l’analyse (facultatif)</legend>
+            <p className="field-hint">
+              Ces éléments guident le plan de rédaction. Indépendants du parcours
+              « Construire mon projet ».
+            </p>
+            <label>
+              Titre de travail
+              <input
+                maxLength={220}
+                value={draft.workingTitle || ""}
+                onChange={(e) => update("workingTitle", e.target.value)}
+                placeholder="Intitulé provisoire de votre manuscrit"
+                aria-label="Titre de travail (facultatif)"
+              />
+            </label>
+            <label>
+              Hypothèses
+              <textarea
+                rows={4}
+                maxLength={1500}
+                value={hypothesesText}
+                onChange={(e) => update("hypotheses", e.target.value)}
+                placeholder={"Une hypothèse par ligne\nEx. Les usages varient selon le contexte institutionnel."}
+                aria-label="Hypothèses (facultatif, une par ligne)"
+              />
+            </label>
+            <label>
+              Méthode
+              <textarea
+                rows={3}
+                maxLength={800}
+                value={draft.method || ""}
+                onChange={(e) => update("method", e.target.value)}
+                placeholder="Approche, outils ou protocole que vous mobilisez."
+                aria-label="Méthode (facultatif)"
+              />
+            </label>
+            <label>
+              Terrain / corpus
+              <textarea
+                rows={3}
+                maxLength={800}
+                value={draft.fieldOrCorpus || ""}
+                onChange={(e) => update("fieldOrCorpus", e.target.value)}
+                placeholder="Public, lieux, archives ou corpus que vous analysez."
+                aria-label="Terrain ou corpus (facultatif)"
+              />
+            </label>
+            <label>
+              Consignes spécifiques (établissement, directeur, revue, éditeur)
+              <textarea
+                rows={3}
+                maxLength={SPECIFIC_INSTRUCTIONS_MAX}
+                value={draft.specificInstructions || ""}
+                onChange={(e) =>
+                  update("specificInstructions", e.target.value)
+                }
+                placeholder="Ex. consignes du directeur, de la revue ou de l’éditeur…"
+                aria-label="Consignes spécifiques (facultatif)"
+              />
+              <span className="field-hint">
+                {(draft.specificInstructions || "").length} /{" "}
+                {SPECIFIC_INSTRUCTIONS_MAX} · priment sur le profil générique du
+                support
+              </span>
+            </label>
+          </fieldset>
           {!frameOk && (
             <p className="cp-message" role="status">
               Renseignez les champs obligatoires (*) : type, discipline, volume,
@@ -703,6 +845,20 @@ export default function CorpusOrganizer({
                 </dd>
               </div>
               <div className="corpus-recap-row">
+                <dt>Attentes du support</dt>
+                <dd>
+                  {genreExpectationsSummary(
+                    genreProfileFor(draft.documentType),
+                  )}
+                </dd>
+              </div>
+              {(draft.specificInstructions || "").trim() && (
+                <div className="corpus-recap-row">
+                  <dt>Consignes spécifiques</dt>
+                  <dd>{(draft.specificInstructions || "").trim()}</dd>
+                </div>
+              )}
+              <div className="corpus-recap-row">
                 <dt>Discipline</dt>
                 <dd>
                   {disciplineLabel(draft.discipline, draft.disciplineOther)}
@@ -730,10 +886,98 @@ export default function CorpusOrganizer({
               <div className="corpus-recap-row">
                 <dt>Matériaux retenus</dt>
                 <dd>
-                  {usable.length} fiche{usable.length > 1 ? "s" : ""} avec texte
-                  exploitable
+                  {usable.length} fiche{usable.length > 1 ? "s" : ""} ·{" "}
+                  {estimate.units.toLocaleString("fr-FR")} unité
+                  {estimate.units > 1 ? "s" : ""} ·{" "}
+                  {estimate.characters.toLocaleString("fr-FR")} caractères
+                  {(estimate.scannedPages > 0 || estimate.imageUnits > 0) && (
+                    <>
+                      {" "}
+                      (
+                      {[
+                        estimate.scannedPages > 0
+                          ? `${estimate.scannedPages} page(s) scannée(s)`
+                          : "",
+                        estimate.imageUnits > 0
+                          ? `${estimate.imageUnits} image(s)`
+                          : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                      )
+                    </>
+                  )}
                 </dd>
               </div>
+              {!simulatePlan && (
+                <div className="corpus-recap-row">
+                  <dt>Durée indicative</dt>
+                  <dd>
+                    {showBatchChoice && preferBatch
+                      ? `~${estimate.durationBatchHours} h (mode économique)`
+                      : `~${estimate.durationRealtimeMin} min (temps réel)`}
+                    {showBatchChoice && (
+                      <fieldset className="corpus-mode-radios">
+                        <legend className="corpus-sr-only">Mode d’analyse</legend>
+                        <label>
+                          <input
+                            type="radio"
+                            name="corpus-analysis-mode"
+                            checked={!preferBatch}
+                            onChange={() => setPreferBatch(false)}
+                          />{" "}
+                          Temps réel
+                        </label>
+                        <label>
+                          <input
+                            type="radio"
+                            name="corpus-analysis-mode"
+                            checked={preferBatch}
+                            onChange={() => setPreferBatch(true)}
+                          />{" "}
+                          Économique : ≈ 50 % moins cher, résultat sous 24 h
+                        </label>
+                      </fieldset>
+                    )}
+                  </dd>
+                </div>
+              )}
+              {workingTitle && (
+                <div className="corpus-recap-row">
+                  <dt>Titre de travail</dt>
+                  <dd>{workingTitle}</dd>
+                </div>
+              )}
+              {researchQuestion && (
+                <div className="corpus-recap-row">
+                  <dt>Question de recherche</dt>
+                  <dd>{researchQuestion}</dd>
+                </div>
+              )}
+              {hypothesesList.length > 0 && (
+                <div className="corpus-recap-row">
+                  <dt>Hypothèses</dt>
+                  <dd>
+                    <ul>
+                      {hypothesesList.map((h: string, i: number) => (
+                        <li key={i}>{h}</li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              )}
+              {methodText && (
+                <div className="corpus-recap-row">
+                  <dt>Méthode</dt>
+                  <dd>{methodText}</dd>
+                </div>
+              )}
+              {fieldOrCorpusText && (
+                <div className="corpus-recap-row">
+                  <dt>Terrain / corpus</dt>
+                  <dd>{fieldOrCorpusText}</dd>
+                </div>
+              )}
             </dl>
             {draft.brief && (
               <details className="corpus-plan-brief">
@@ -791,7 +1035,7 @@ export default function CorpusOrganizer({
                 <button
                   type="button"
                   className="secondary"
-                  disabled={!consent || busy || !ready || !planOk}
+                  disabled={busy || !ready || !planOk}
                   onClick={() => persist(false)}
                 >
                   Enregistrer le cadrage
@@ -814,10 +1058,10 @@ export default function CorpusOrganizer({
                   {busy
                     ? simulatePlan
                       ? "Préparation de l’aperçu…"
-                      : "Élaboration du plan…"
+                      : "Analyse en cours…"
                     : simulatePlan
                       ? "Voir l’aperçu du plan"
-                      : "Demander un plan de rédaction"}{" "}
+                      : "Lancer l’analyse"}{" "}
                   <i className="fa-solid fa-arrow-right" />
                 </button>
               </div>

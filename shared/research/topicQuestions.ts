@@ -37,19 +37,10 @@ const projectTypeGroups = [
     ],
   },
   {
-    label: "Article, livre, dossier et fiche",
+    label: "Article, chapitre et livre",
     options: [
-      ["article", "Article scientifique"],
+      ["article", "Article scientifique / chapitre d’ouvrage"],
       ["book", "Livre"],
-      ["research_dossier", "Dossier de recherche"],
-      ["reading_sheet", "Fiche de lecture"],
-    ],
-  },
-  {
-    label: "Autres",
-    options: [
-      ["internship", "Rapport de stage"],
-      ["other", "Autre"],
     ],
   },
 ].map((group) => ({

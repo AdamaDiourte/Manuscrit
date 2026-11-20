@@ -33,9 +33,10 @@ const SEARCH_DEBOUNCE_MS = 200;
 
 type TabId = "plan" | "planning";
 
-type SectionMeta = {
+type SubsectionMeta = {
   index: number;
   title: string;
+  thesis: string;
   advice: string;
   evidence: any[];
   matchingEvidence: any[];
@@ -43,6 +44,20 @@ type SectionMeta = {
   evidenceCount: number;
   matchCount: number;
   hasMatch: boolean;
+};
+
+type SectionMeta = {
+  index: number;
+  title: string;
+  thesis: string;
+  advice: string;
+  evidence: any[];
+  matchingEvidence: any[];
+  materialCount: number;
+  evidenceCount: number;
+  matchCount: number;
+  hasMatch: boolean;
+  subsections: SubsectionMeta[];
 };
 
 type Props = {
@@ -94,8 +109,8 @@ export default function WritingPlanView({
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [materialFilter, setMaterialFilter] = useState("");
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
-  const [visibleCount, setVisibleCount] = useState<Record<number, number>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [visibleCount, setVisibleCount] = useState<Record<string, number>>({});
   const [tocOpen, setTocOpen] = useState(false);
   const [activeSection, setActiveSection] = useState(0);
   const [printMode, setPrintMode] = useState(false);
@@ -192,7 +207,9 @@ export default function WritingPlanView({
       const evidence = Array.isArray(s.evidence) ? s.evidence : [];
       const titleHit = !qNorm || norm(String(s.title || "")).includes(qNorm);
       const adviceHit = !qNorm || norm(String(s.advice || "")).includes(qNorm);
-      const sectionTextHit = titleHit || adviceHit;
+      const thesisHit =
+        !qNorm || norm(String(s.thesis || "")).includes(qNorm);
+      const sectionTextHit = titleHit || adviceHit || thesisHit;
 
       const matchingEvidence = evidence.filter((ev: any) => {
         if (materialFilter && ev.id !== materialFilter) return false;
@@ -201,27 +218,83 @@ export default function WritingPlanView({
         return norm(String(ev.quote || "")).includes(qNorm);
       });
 
+      const subsections: SubsectionMeta[] = (
+        Array.isArray(s.subsections) ? s.subsections : []
+      ).map((sub: any, subIndex: number) => {
+        const subEv = Array.isArray(sub.evidence) ? sub.evidence : [];
+        const subTitleHit =
+          !qNorm || norm(String(sub.title || "")).includes(qNorm);
+        const subAdviceHit =
+          !qNorm || norm(String(sub.advice || "")).includes(qNorm);
+        const subThesisHit =
+          !qNorm || norm(String(sub.thesis || "")).includes(qNorm);
+        const subTextHit = subTitleHit || subAdviceHit || subThesisHit;
+        const subMatching = subEv.filter((ev: any) => {
+          if (materialFilter && ev.id !== materialFilter) return false;
+          if (!qNorm) return true;
+          if (subTextHit || sectionTextHit) return true;
+          return norm(String(ev.quote || "")).includes(qNorm);
+        });
+        const subMaterials = new Set(
+          subEv.map((ev: any) => ev.id).filter(Boolean),
+        );
+        const subHasMatch =
+          !qNorm && !materialFilter
+            ? true
+            : materialFilter
+              ? subMatching.length > 0
+              : subTextHit || subMatching.length > 0 || sectionTextHit;
+        return {
+          index: subIndex,
+          title: String(sub.title || "Sous-partie"),
+          thesis: String(sub.thesis || ""),
+          advice: String(sub.advice || ""),
+          evidence: subEv,
+          matchingEvidence: subMatching,
+          materialCount: subMaterials.size,
+          evidenceCount: subEv.length,
+          matchCount: subMatching.length,
+          hasMatch: subHasMatch,
+        };
+      });
+
       const materialIds = new Set(
-        evidence.map((ev: any) => ev.id).filter(Boolean),
+        [
+          ...evidence.map((ev: any) => ev.id),
+          ...subsections.flatMap((sub) =>
+            sub.evidence.map((ev: any) => ev.id),
+          ),
+        ].filter(Boolean),
       );
+
+      const matchCount =
+        matchingEvidence.length +
+        subsections.reduce((a, sub) => a + sub.matchCount, 0);
+      const evidenceCount =
+        evidence.length +
+        subsections.reduce((a, sub) => a + sub.evidenceCount, 0);
 
       const hasMatch =
         !qNorm && !materialFilter
           ? true
           : materialFilter
-            ? matchingEvidence.length > 0
-            : sectionTextHit || matchingEvidence.length > 0;
+            ? matchCount > 0
+            : sectionTextHit ||
+              matchingEvidence.length > 0 ||
+              subsections.some((sub) => sub.hasMatch);
 
       return {
         index,
         title: String(s.title || "Section"),
+        thesis: String(s.thesis || ""),
         advice: String(s.advice || ""),
         evidence,
         matchingEvidence,
         materialCount: materialIds.size,
-        evidenceCount: evidence.length,
-        matchCount: matchingEvidence.length,
+        evidenceCount,
+        matchCount,
         hasMatch,
+        subsections,
       };
     });
   }, [sections, qNorm, materialFilter]);
@@ -232,6 +305,12 @@ export default function WritingPlanView({
       for (const ev of s.evidence || []) {
         if (!ev?.id) continue;
         counts.set(ev.id, (counts.get(ev.id) || 0) + 1);
+      }
+      for (const sub of s.subsections || []) {
+        for (const ev of sub.evidence || []) {
+          if (!ev?.id) continue;
+          counts.set(ev.id, (counts.get(ev.id) || 0) + 1);
+        }
       }
     }
     return [...counts.entries()]
@@ -256,9 +335,19 @@ export default function WritingPlanView({
   const displayedMatching = useMemo(() => {
     if (printMode) return totalMatching;
     return sectionMeta.reduce((a, s) => {
-      if (!expanded[s.index]) return a;
-      const lim = visibleCount[s.index] ?? EVIDENCE_PAGE;
-      return a + Math.min(lim, s.matchCount);
+      let n = a;
+      if (s.subsections.length) {
+        for (const sub of s.subsections) {
+          const key = `${s.index}-${sub.index}`;
+          if (!expanded[key]) continue;
+          const lim = visibleCount[key] ?? EVIDENCE_PAGE;
+          n += Math.min(lim, sub.matchCount);
+        }
+      } else if (expanded[String(s.index)]) {
+        const lim = visibleCount[String(s.index)] ?? EVIDENCE_PAGE;
+        n += Math.min(lim, s.matchCount);
+      }
+      return n;
     }, 0);
   }, [sectionMeta, expanded, visibleCount, printMode, totalMatching]);
 
@@ -323,6 +412,7 @@ export default function WritingPlanView({
           draft.documentType,
           draft.documentTypeOther,
         ),
+        documentType: draft.documentType,
         plan: {
           ...result,
           schedule: kind === "schedule" ? schedule : undefined,
@@ -368,15 +458,33 @@ export default function WritingPlanView({
     setTocOpen(false);
   }
 
+  function evidenceKey(sectionIndex: number, subIndex?: number) {
+    return subIndex === undefined
+      ? String(sectionIndex)
+      : `${sectionIndex}-${subIndex}`;
+  }
+
   function expandAll() {
-    const next: Record<number, boolean> = {};
-    const counts: Record<number, number> = {};
+    const next: Record<string, boolean> = {};
+    const counts: Record<string, number> = {};
     for (const s of sectionMeta) {
-      next[s.index] = true;
-      counts[s.index] = Math.max(
-        visibleCount[s.index] ?? EVIDENCE_PAGE,
-        Math.min(EVIDENCE_PAGE, s.matchCount) || EVIDENCE_PAGE,
-      );
+      if (s.subsections.length) {
+        for (const sub of s.subsections) {
+          const key = evidenceKey(s.index, sub.index);
+          next[key] = true;
+          counts[key] = Math.max(
+            visibleCount[key] ?? EVIDENCE_PAGE,
+            Math.min(EVIDENCE_PAGE, sub.matchCount) || EVIDENCE_PAGE,
+          );
+        }
+      } else {
+        const key = evidenceKey(s.index);
+        next[key] = true;
+        counts[key] = Math.max(
+          visibleCount[key] ?? EVIDENCE_PAGE,
+          Math.min(EVIDENCE_PAGE, s.matchCount) || EVIDENCE_PAGE,
+        );
+      }
     }
     setExpanded(next);
     setVisibleCount((prev) => ({ ...prev, ...counts }));
@@ -386,23 +494,23 @@ export default function WritingPlanView({
     setExpanded({});
   }
 
-  function toggleSection(index: number) {
+  function toggleEvidence(key: string) {
     setExpanded((prev) => {
-      const open = !prev[index];
+      const open = !prev[key];
       if (open) {
         setVisibleCount((c) => ({
           ...c,
-          [index]: c[index] ?? EVIDENCE_PAGE,
+          [key]: c[key] ?? EVIDENCE_PAGE,
         }));
       }
-      return { ...prev, [index]: open };
+      return { ...prev, [key]: open };
     });
   }
 
-  function showMore(index: number) {
+  function showMore(key: string) {
     setVisibleCount((prev) => ({
       ...prev,
-      [index]: (prev[index] ?? EVIDENCE_PAGE) + EVIDENCE_MORE,
+      [key]: (prev[key] ?? EVIDENCE_PAGE) + EVIDENCE_MORE,
     }));
   }
 
@@ -608,6 +716,67 @@ export default function WritingPlanView({
               dans le texte. Ce n’est pas le texte final.
             </p>
 
+            {result.coverage && (
+              <div
+                className={
+                  result.coverage.complete
+                    ? "writing-plan-coverage is-complete"
+                    : "writing-plan-coverage"
+                }
+                role="status"
+              >
+                <p>
+                  {Number(result.coverage.done || 0).toLocaleString("fr-FR")} /{" "}
+                  {Number(result.coverage.totalUnits || 0).toLocaleString(
+                    "fr-FR",
+                  )}{" "}
+                  unités analysées
+                  {result.coverage.complete
+                    ? " — couverture complète"
+                    : " — couverture incomplète"}
+                  .
+                </p>
+                {!result.coverage.complete &&
+                  (result.coverage.failed > 0 ||
+                    result.coverage.skipped > 0) && (
+                    <p className="writing-plan-coverage-detail">
+                      {result.coverage.failed > 0
+                        ? `${result.coverage.failed} en échec`
+                        : ""}
+                      {result.coverage.failed > 0 &&
+                      result.coverage.skipped > 0
+                        ? " · "
+                        : ""}
+                      {result.coverage.skipped > 0
+                        ? `${result.coverage.skipped} ignorée(s)`
+                        : ""}
+                    </p>
+                  )}
+                {Array.isArray(result.unused) && result.unused.length > 0 && (
+                  <details className="writing-plan-unused">
+                    <summary>
+                      Fiches non utilisées ({result.unused.length})
+                    </summary>
+                    <ul>
+                      {result.unused.map(
+                        (u: {
+                          unitId?: string;
+                          materialId?: string;
+                          reason?: string;
+                        }) => (
+                          <li key={u.unitId || u.materialId}>
+                            {(u.unitId || "").slice(0, 8)}…
+                            {u.materialId ? ` · ${u.materialId}` : ""}
+                            {u.reason ? ` — ${u.reason}` : ""}
+                          </li>
+                        ),
+                      )}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            )}
+
             <div className="writing-plan-preview-tools">
               <label className="writing-plan-search">
                 <span className="topic-sr-only">Rechercher dans l’aperçu</span>
@@ -697,6 +866,42 @@ export default function WritingPlanView({
                           matériau{s.materialCount !== 1 ? "x" : ""}
                         </span>
                       </button>
+                      {s.subsections.length > 0 && (
+                        <ol className="writing-plan-toc-sub">
+                          {s.subsections.map((sub) => (
+                            <li key={sub.index}>
+                              <button
+                                type="button"
+                                className={[
+                                  "writing-plan-toc-item is-sub",
+                                  !sub.hasMatch ? "is-dimmed" : "",
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")}
+                                onClick={() => {
+                                  const el = document.getElementById(
+                                    `writing-section-${s.index}-sub-${sub.index}`,
+                                  );
+                                  el?.scrollIntoView({
+                                    behavior: "smooth",
+                                    block: "start",
+                                  });
+                                  setActiveSection(s.index);
+                                  setTocOpen(false);
+                                }}
+                              >
+                                <span className="writing-plan-toc-label">
+                                  {s.index + 1}.{sub.index + 1} {sub.title}
+                                </span>
+                                <span className="writing-plan-toc-badge">
+                                  {sub.evidenceCount} extrait
+                                  {sub.evidenceCount !== 1 ? "s" : ""}
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
                     </li>
                   ))}
                 </ol>
@@ -704,14 +909,100 @@ export default function WritingPlanView({
 
               <div className="writing-plan-sections">
                 {sectionMeta.map((s) => {
-                  const isOpen = printMode || Boolean(expanded[s.index]);
-                  const limit = printMode
-                    ? s.matchCount
-                    : (visibleCount[s.index] ?? EVIDENCE_PAGE);
-                  const shown = isOpen
-                    ? s.matchingEvidence.slice(0, limit)
-                    : [];
-                  const remaining = Math.max(0, s.matchCount - limit);
+                  function renderEvidenceBlock(
+                    key: string,
+                    matchCount: number,
+                    matching: any[],
+                  ) {
+                    const isOpen = printMode || Boolean(expanded[key]);
+                    const limit = printMode
+                      ? matchCount
+                      : (visibleCount[key] ?? EVIDENCE_PAGE);
+                    const shown = isOpen ? matching.slice(0, limit) : [];
+                    const remaining = Math.max(0, matchCount - limit);
+                    if (matchCount <= 0) return null;
+                    return (
+                      <div className="writing-plan-evidence-block">
+                        {!printMode && (
+                          <button
+                            type="button"
+                            className="secondary writing-plan-evidence-toggle"
+                            aria-expanded={isOpen}
+                            onClick={() => toggleEvidence(key)}
+                          >
+                            {isOpen
+                              ? "Replier les extraits"
+                              : `Voir les ${matchCount} extrait${
+                                  matchCount !== 1 ? "s" : ""
+                                }`}
+                          </button>
+                        )}
+                        {isOpen && (
+                          <div className="writing-plan-evidence-list">
+                            {shown.map((v: any, j: number) => {
+                              const m = materialsById.get(v.id);
+                              const isCounter =
+                                v.stance === "contredit" ||
+                                v.stance === "nuance";
+                              return (
+                                <blockquote
+                                  key={`${v.id}-${j}-${v.start}`}
+                                  className="writing-plan-quote"
+                                >
+                                  {isCounter && (
+                                    <span className="writing-plan-badge is-counter">
+                                      Contre-exemple
+                                    </span>
+                                  )}
+                                  <p>« {v.quote} »</p>
+                                  {v.source === "transcription-ia" && (
+                                    <p className="writing-plan-transcription-note">
+                                      Transcription automatique — à vérifier
+                                      sur l’original
+                                    </p>
+                                  )}
+                                  {m && (
+                                    <div className="writing-plan-cite">
+                                      <span>
+                                        {materialCode(m)} · {m.title}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="writing-plan-open"
+                                        title="Ouvrir le matériau et le passage retenu"
+                                        aria-label={`Ouvrir le matériau ${m.title}`}
+                                        onClick={() =>
+                                          onOpenPassage({
+                                            m,
+                                            quote: v.quote,
+                                            start: v.start,
+                                            end: v.end,
+                                            source: v.source,
+                                          })
+                                        }
+                                      >
+                                        <i className="fa-solid fa-arrow-up-right-from-square" />
+                                      </button>
+                                    </div>
+                                  )}
+                                </blockquote>
+                              );
+                            })}
+                            {!printMode && remaining > 0 && (
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => showMore(key)}
+                              >
+                                Afficher {Math.min(EVIDENCE_MORE, remaining)} de
+                                plus
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
 
                   return (
                     <article
@@ -730,80 +1021,91 @@ export default function WritingPlanView({
                       <h3>
                         {s.index + 1}. {s.title}
                       </h3>
+                      {s.thesis ? (
+                        <p className="writing-plan-thesis">{s.thesis}</p>
+                      ) : null}
+                      {s.materialCount > 0 && (
+                        <p className="writing-plan-support">
+                          Appuyé par {s.materialCount} matériau
+                          {s.materialCount !== 1 ? "x" : ""}
+                        </p>
+                      )}
                       <p>{s.advice}</p>
 
-                      {s.matchCount > 0 && (
-                        <div className="writing-plan-evidence-block">
-                          {!printMode && (
-                            <button
-                              type="button"
-                              className="secondary writing-plan-evidence-toggle"
-                              aria-expanded={isOpen}
-                              onClick={() => toggleSection(s.index)}
+                      {s.subsections.length > 0
+                        ? s.subsections.map((sub) => (
+                            <div
+                              key={sub.index}
+                              id={`writing-section-${s.index}-sub-${sub.index}`}
+                              className={
+                                !sub.hasMatch
+                                  ? "writing-plan-subsection is-dimmed"
+                                  : "writing-plan-subsection"
+                              }
                             >
-                              {isOpen
-                                ? "Replier les extraits"
-                                : `Voir les ${s.matchCount} extrait${
-                                    s.matchCount !== 1 ? "s" : ""
-                                  }`}
-                            </button>
-                          )}
-
-                          {isOpen && (
-                            <div className="writing-plan-evidence-list">
-                              {shown.map((v: any, j: number) => {
-                                const m = materialsById.get(v.id);
-                                return (
-                                  <blockquote
-                                    key={`${v.id}-${j}-${v.start}`}
-                                    className="writing-plan-quote"
-                                  >
-                                    <p>« {v.quote} »</p>
-                                    {m && (
-                                      <div className="writing-plan-cite">
-                                        <span>
-                                          {materialCode(m)} · {m.title}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          className="writing-plan-open"
-                                          title="Ouvrir le matériau et le passage retenu"
-                                          aria-label={`Ouvrir le matériau ${m.title}`}
-                                          onClick={() =>
-                                            onOpenPassage({
-                                              m,
-                                              quote: v.quote,
-                                              start: v.start,
-                                              end: v.end,
-                                            })
-                                          }
-                                        >
-                                          <i className="fa-solid fa-arrow-up-right-from-square" />
-                                        </button>
-                                      </div>
-                                    )}
-                                  </blockquote>
-                                );
-                              })}
-                              {!printMode && remaining > 0 && (
-                                <button
-                                  type="button"
-                                  className="secondary"
-                                  onClick={() => showMore(s.index)}
-                                >
-                                  Afficher {Math.min(EVIDENCE_MORE, remaining)}{" "}
-                                  de plus
-                                </button>
+                              <h4>
+                                {s.index + 1}.{sub.index + 1} {sub.title}
+                              </h4>
+                              {sub.thesis ? (
+                                <p className="writing-plan-thesis">
+                                  {sub.thesis}
+                                </p>
+                              ) : null}
+                              {sub.materialCount > 0 && (
+                                <p className="writing-plan-support">
+                                  Appuyé par {sub.materialCount} matériau
+                                  {sub.materialCount !== 1 ? "x" : ""}
+                                </p>
+                              )}
+                              {sub.advice ? <p>{sub.advice}</p> : null}
+                              {renderEvidenceBlock(
+                                evidenceKey(s.index, sub.index),
+                                sub.matchCount,
+                                sub.matchingEvidence,
                               )}
                             </div>
+                          ))
+                        : renderEvidenceBlock(
+                            evidenceKey(s.index),
+                            s.matchCount,
+                            s.matchingEvidence,
                           )}
-                        </div>
-                      )}
                     </article>
                   );
                 })}
               </div>
             </div>
+
+            {Array.isArray(result.themes) && result.themes.length > 0 && (
+              <div className="writing-plan-themes">
+                <h3>Thèmes repérés</h3>
+                <ul className="writing-plan-theme-list">
+                  {result.themes.map(
+                    (t: {
+                      themeId?: string;
+                      label?: string;
+                      emergent?: boolean;
+                      fragile?: boolean;
+                      materialCount?: number;
+                    }) => (
+                      <li key={t.themeId || t.label}>
+                        <span>{t.label}</span>
+                        {t.emergent && (
+                          <span className="writing-plan-badge is-emergent">
+                            Émergent
+                          </span>
+                        )}
+                        {t.fragile && (
+                          <span className="writing-plan-badge is-fragile">
+                            Fragile : une seule source
+                          </span>
+                        )}
+                      </li>
+                    ),
+                  )}
+                </ul>
+              </div>
+            )}
 
             {result.gaps?.length > 0 && (
               <>

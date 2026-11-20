@@ -16,6 +16,8 @@ export type TopicArchiveEntry = {
   model?: string;
   simulated?: boolean;
   projectType?: string;
+  /** Sous-ensemble profil / préremplissage (optionnel). */
+  answers?: Record<string, unknown>;
   topics: GeneratedTopic[];
   chosenTopic?: GeneratedTopic | null;
   documents?: ArchivedDoc[];
