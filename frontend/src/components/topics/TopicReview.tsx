@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   TOPIC_BLOCKS,
   topicQuestions,
 } from "../../../../shared/research/topicQuestions";
+import { computeProfileCompleteness } from "../../../../shared/research/profileCompleteness";
 import {
   isQuestionVisible,
   SKIP_VALUE,
@@ -10,6 +11,15 @@ import {
 import QuestionField from "./QuestionField";
 import { formatAnswer } from "./formatAnswer";
 import { useConfirmDialog } from "./ConfirmDialog";
+
+const ALLOW_SIMULATION =
+  import.meta.env.DEV && import.meta.env.VITE_ALLOW_SIMULATION === "true";
+
+const GENERATION_STEPS = [
+  "Analyse de votre profil…",
+  "Construction des sujets…",
+  "Contrôle qualité…",
+] as const;
 
 type Props = {
   answers: Record<string, unknown>;
@@ -35,10 +45,37 @@ export default function TopicReview({
   onSimulate,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [stepIndex, setStepIndex] = useState(0);
   const { confirm, dialog } = useConfirmDialog();
+  const completeness = useMemo(
+    () => computeProfileCompleteness(answers),
+    [answers],
+  );
+
+  useEffect(() => {
+    if (!busy) {
+      setStepIndex(0);
+      return;
+    }
+    setStepIndex(0);
+    const timers = [
+      window.setTimeout(() => setStepIndex(1), 12_000),
+      window.setTimeout(() => setStepIndex(2), 24_000),
+    ];
+    return () => timers.forEach((id) => window.clearTimeout(id));
+  }, [busy]);
 
   function setOne(id: string, value: unknown) {
     onAnswers({ ...answers, [id]: value });
+  }
+
+  function jumpToQuestion(id: string) {
+    setEditingId(id);
+    window.setTimeout(() => {
+      document
+        .getElementById("review-q-" + id)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
   }
 
   function clearOne(id: string) {
@@ -75,6 +112,27 @@ export default function TopicReview({
         réponses est conservé.
       </p>
 
+      {completeness.level === "low" && completeness.missing.length > 0 && (
+        <div className="topic-completeness-hint" role="status">
+          <p>
+            Vos sujets seront plus personnalisés si vous précisez :{" "}
+            {completeness.missing.slice(0, 5).map((m, i) => (
+              <span key={m.id}>
+                {i > 0 ? ", " : ""}
+                <button
+                  type="button"
+                  className="topic-completeness-link"
+                  onClick={() => jumpToQuestion(m.id)}
+                >
+                  {m.label}
+                </button>
+              </span>
+            ))}
+            .
+          </p>
+        </div>
+      )}
+
       {TOPIC_BLOCKS.map((block) => {
         const qs = topicQuestions.filter(
           (q) => q.block === block.id && isQuestionVisible(q, answers),
@@ -94,7 +152,11 @@ export default function TopicReview({
                 const text = empty ? "Non renseigné" : formatAnswer(q.id, raw);
                 const isEditing = editingId === q.id;
                 return (
-                  <li key={q.id} className={isEditing ? "editing" : ""}>
+                  <li
+                    key={q.id}
+                    id={"review-q-" + q.id}
+                    className={isEditing ? "editing" : ""}
+                  >
                     <div className="topic-review-row">
                       <div>
                         <strong>{q.label}</strong>
@@ -159,21 +221,45 @@ export default function TopicReview({
 
       {error && <p role="alert">{error}</p>}
 
-      <label className="topic-simulate">
-        <input
-          type="checkbox"
-          checked={simulate}
-          disabled={busy}
-          onChange={(e) => onSimulate(e.target.checked)}
-        />
-        <span>
-          Mode simulation (sans IA)
-          <small>
-            Génère trois sujets d’exemple et des documents Word téléchargeables
-            pour tester l’interface.
-          </small>
-        </span>
-      </label>
+      {busy && (
+        <div className="topic-loading-steps" role="status" aria-live="polite">
+          <p className="topic-loading-current">{GENERATION_STEPS[stepIndex]}</p>
+          <ol>
+            {GENERATION_STEPS.map((label, i) => (
+              <li
+                key={label}
+                className={
+                  i < stepIndex
+                    ? "is-done"
+                    : i === stepIndex
+                      ? "is-current"
+                      : ""
+                }
+              >
+                {label}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {ALLOW_SIMULATION && (
+        <label className="topic-simulate">
+          <input
+            type="checkbox"
+            checked={simulate}
+            disabled={busy}
+            onChange={(e) => onSimulate(e.target.checked)}
+          />
+          <span>
+            Mode démonstration (données fictives, sans IA)
+            <small>
+              Génère trois sujets d’exemple et des documents Word
+              téléchargeables pour tester l’interface.
+            </small>
+          </span>
+        </label>
+      )}
 
       <div className="topic-nav">
         <button
@@ -200,8 +286,8 @@ export default function TopicReview({
             disabled={busy}
           >
             {busy
-              ? "Analyse…"
-              : simulate
+              ? "Génération…"
+              : ALLOW_SIMULATION && simulate
                 ? "Simuler trois sujets"
                 : "Valider et analyser"}
           </button>

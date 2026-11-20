@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import type {
   DocumentKind,
   GeneratedTopic,
@@ -6,6 +11,7 @@ import type {
   TopicAxis,
   TopicConsents,
   TopicDocument,
+  VerifiedReading,
 } from "../../../../shared/research/topicTypes";
 import { REGEN_REASON_LABELS } from "../../../../shared/research/topicTypes";
 import {
@@ -18,6 +24,8 @@ import {
   buildWorkPlanFromTopic,
   type WorkPlan,
 } from "../../../../shared/research/workPlan";
+import { computeTimeBudget } from "../../../../shared/research/timeBudget";
+import { fieldworkAvailableHours } from "../../../../shared/research/fieldworkCosts";
 import { downloadBase64File } from "./downloadDocx";
 import WorkPlanView from "../copilot/WorkPlanView";
 
@@ -34,17 +42,28 @@ export type DocFile = {
   base64: string;
 };
 
+type Bibliography = {
+  cited: VerifiedReading[];
+  other: VerifiedReading[];
+};
+
 type Props = {
   topics: GeneratedTopic[];
+  ticket: string;
   regenerationsRemaining: number;
   model?: string;
   simulated?: boolean;
+  personalizationLevel?: "high" | "medium" | "low";
+  reviewStatus?: "ok" | "failed";
+  axisStatus?: Partial<Record<TopicAxis, "pending" | "done" | "error">>;
   answers: Record<string, unknown>;
   consents: TopicConsents;
   busy: boolean;
   error: string;
+  onTopicsUpdate?: (topics: GeneratedTopic[]) => void;
   onRegenerate: (axis: TopicAxis, reason: RegenReason) => void;
   onRestart: () => void;
+  onEditProfile?: () => void;
   onChooseTopic?: (
     topic: GeneratedTopic,
     docs: DocFile[],
@@ -60,17 +79,172 @@ function scrollFormTop() {
     ?.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
+function ClampText({
+  children,
+  lines = 3,
+}: {
+  children: ReactNode;
+  lines?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className={"topic-clamp" + (expanded ? " is-expanded" : "")}>
+      <div
+        className="topic-clamp-body"
+        style={
+          expanded
+            ? undefined
+            : ({ WebkitLineClamp: lines } as CSSProperties)
+        }
+      >
+        {children}
+      </div>
+      <button
+        type="button"
+        className="topic-clamp-toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        {expanded ? "Réduire" : "Lire la suite"}
+      </button>
+    </div>
+  );
+}
+
+function ReadingsBlock({
+  readings,
+  loading,
+  keywords,
+}: {
+  readings: VerifiedReading[];
+  loading: boolean;
+  keywords: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  if (loading) {
+    return (
+      <p className="topic-readings-loading" role="status">
+        Recherche de lectures vérifiées…
+      </p>
+    );
+  }
+  if (!readings.length) {
+    return (
+      <div className="topic-readings-empty">
+        <p>
+          Aucune lecture suffisamment proche de ce sujet n’a été retenue.
+          Utilisez ces mots-clés pour une recherche manuelle :
+        </p>
+        {keywords.length > 0 ? (
+          <p className="topic-keywords">
+            {keywords.map((k) => (
+              <span key={k}>{k}</span>
+            ))}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <div className="topic-readings">
+      <button
+        type="button"
+        className="topic-readings-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        Pistes de lecture (références réelles issues d’OpenAlex et HAL)
+      </button>
+      {open && (
+        <div className="topic-readings-body">
+          <p className="topic-readings-note">
+            Trouvées automatiquement à partir des mots-clés : vérifiez leur
+            pertinence avant de les citer.
+          </p>
+          <ul>
+            {readings.map((r) => (
+              <li key={r.url + r.title}>
+                <a href={r.url} target="_blank" rel="noreferrer">
+                  {r.authors.length
+                    ? `${r.authors.join(", ")}${r.year ? ` (${r.year})` : ""}. `
+                    : ""}
+                  {r.title}
+                </a>
+                {r.venue ? <span> — {r.venue}</span> : null}
+                <span className="topic-reading-source"> [{r.source}]</span>
+                {r.relevance_reason ? (
+                  <p className="topic-reading-reason">{r.relevance_reason}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BibliographyPreview({ bibliography }: { bibliography: Bibliography }) {
+  const hasCited = bibliography.cited.length > 0;
+  const hasOther = bibliography.other.length > 0;
+  if (!hasCited && !hasOther) return null;
+  return (
+    <div className="topic-bibliography-preview">
+      {hasCited ? (
+        <div>
+          <h3>Références citées</h3>
+          <ul>
+            {bibliography.cited.map((r) => (
+              <li key={"c-" + r.url + r.title}>
+                <a href={r.url} target="_blank" rel="noreferrer">
+                  {r.authors.length ? `${r.authors.join(", ")}. ` : ""}
+                  {r.title}
+                  {r.year ? ` (${r.year})` : ""}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {hasOther ? (
+        <div>
+          <h3>Autres pistes de lecture</h3>
+          <ul>
+            {bibliography.other.map((r) => (
+              <li key={"o-" + r.url + r.title}>
+                <a href={r.url} target="_blank" rel="noreferrer">
+                  {r.authors.length ? `${r.authors.join(", ")}. ` : ""}
+                  {r.title}
+                  {r.year ? ` (${r.year})` : ""}
+                </a>
+                {r.relevance_reason ? (
+                  <p className="topic-reading-reason">{r.relevance_reason}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function TopicResults({
   topics,
+  ticket,
   regenerationsRemaining,
-  model,
   simulated,
+  personalizationLevel,
+  reviewStatus,
+  axisStatus,
   answers,
   consents,
   busy,
   error,
+  onTopicsUpdate,
   onRegenerate,
   onRestart,
+  onEditProfile,
   onChooseTopic,
   onBusy,
   onError,
@@ -81,8 +255,12 @@ export default function TopicResults({
   const [chosen, setChosen] = useState<GeneratedTopic | null>(null);
   const [docs, setDocs] = useState<DocFile[]>([]);
   const [workPlanPreview, setWorkPlanPreview] = useState<WorkPlan | null>(null);
+  const [bibliography, setBibliography] = useState<Bibliography | null>(null);
   const [pendingAxis, setPendingAxis] = useState<TopicAxis | "">("");
   const [regenAxis, setRegenAxis] = useState<TopicAxis | "">("");
+  const [readingsLoading, setReadingsLoading] = useState<
+    Partial<Record<TopicAxis, boolean>>
+  >({});
 
   useEffect(() => {
     if (!busy) {
@@ -91,16 +269,97 @@ export default function TopicResults({
     }
   }, [busy]);
 
+  const topicsFingerprint = topics
+    .map((t) => t.axis + ":" + t.title)
+    .join("|");
+
+  useEffect(() => {
+    if (!ticket || !topics.length) return;
+    const pending = topics.filter((t) => t.readings === undefined);
+    if (!pending.length) return;
+    let cancelled = false;
+    setReadingsLoading(
+      Object.fromEntries(pending.map((t) => [t.axis, true])) as Partial<
+        Record<TopicAxis, boolean>
+      >,
+    );
+
+    void (async () => {
+      const results = await Promise.all(
+        pending.map(async (topic) => {
+          try {
+            const res = await fetch("/api/topics/readings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ticket,
+                axis: topic.axis,
+                answers,
+                consents,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Lectures impossibles.");
+            return {
+              axis: topic.axis,
+              readings: (data.readings || []) as VerifiedReading[],
+              literature_density: data.literature_density as
+                | "high"
+                | "normal"
+                | "unknown"
+                | undefined,
+            };
+          } catch {
+            return {
+              axis: topic.axis,
+              readings: [] as VerifiedReading[],
+              literature_density: "unknown" as const,
+            };
+          }
+        }),
+      );
+      if (cancelled) return;
+      const byAxis = new Map(
+        results.map((r) => [
+          r.axis,
+          {
+            readings: r.readings,
+            literature_density: r.literature_density,
+          },
+        ]),
+      );
+      onTopicsUpdate?.(
+        topics.map((t) => {
+          const hit = byAxis.get(t.axis);
+          if (!hit) return t;
+          return {
+            ...t,
+            readings: hit.readings || [],
+            literature_density: hit.literature_density || t.literature_density,
+          };
+        }),
+      );
+      setReadingsLoading({});
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // Re-fetch when ticket or topic titles change (e.g. after regen).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- answers/consents stable per session
+  }, [ticket, topicsFingerprint]);
+
   async function fetchDocument(topic: GeneratedTopic, kind: DocumentKind) {
     const res = await fetch("/api/topics/document", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         kind,
-        topic,
+        ticket,
+        topic: { ...topic, readings: undefined },
         answers,
         consents,
-        simulate: Boolean(simulated),
+        ...(simulated ? { simulate: true } : {}),
       }),
     });
     const data = await res.json();
@@ -113,6 +372,7 @@ export default function TopicResults({
         base64: data.file.base64 as string,
       } satisfies DocFile,
       document: (data.document || null) as TopicDocument | null,
+      bibliography: (data.bibliography || null) as Bibliography | null,
     };
   }
 
@@ -120,6 +380,7 @@ export default function TopicResults({
     onError("");
     onBusy(true);
     setPendingAxis(topic.axis);
+    setBibliography(null);
     try {
       const [project, plan] = await Promise.all([
         fetchDocument(topic, "research_project"),
@@ -127,6 +388,7 @@ export default function TopicResults({
       ]);
       const generated = [project.file, plan.file];
       setDocs(generated);
+      setBibliography(project.bibliography);
       const fromApi = plan.document?.workPlan?.phases?.length
         ? plan.document.workPlan
         : null;
@@ -143,8 +405,12 @@ export default function TopicResults({
       setChosen(topic);
       if (onChooseTopic) await onChooseTopic(topic, generated);
       else scrollFormTop();
-    } catch (e: any) {
-      onError(e.message || "Génération des documents impossible.");
+    } catch (e: unknown) {
+      onError(
+        e instanceof Error
+          ? e.message
+          : "Génération des documents impossible.",
+      );
     } finally {
       onBusy(false);
       setPendingAxis("");
@@ -165,6 +431,8 @@ export default function TopicResults({
 
   const projectType = normalizeProjectType(answers.project_type);
   const mainLabel = mainDocumentLabel(projectType);
+  const timeBudget = computeTimeBudget(answers);
+  const availableFieldHours = fieldworkAvailableHours(timeBudget.totalHours);
 
   if (chosen) {
     return (
@@ -213,6 +481,10 @@ export default function TopicResults({
           </div>
         ) : null}
 
+        {bibliography ? (
+          <BibliographyPreview bibliography={bibliography} />
+        ) : null}
+
         <div className="topic-nav">
           <button
             type="button"
@@ -222,6 +494,7 @@ export default function TopicResults({
               setChosen(null);
               setDocs([]);
               setWorkPlanPreview(null);
+              setBibliography(null);
               scrollFormTop();
             }}
           >
@@ -239,28 +512,102 @@ export default function TopicResults({
         <p>
           Comparez les grands axes, choisissez un sujet, ou régénérez-en un après
           avoir indiqué un motif. Le projet et le plan de travail sont générés
-          uniquement après le choix.{" "}
+          uniquement après le choix.
+        </p>
+        <div className="topic-meta-row">
           <span className="topic-ai-badge">
-            {simulated ? "Simulation" : "Contenu généré par IA"}
+            {simulated
+              ? "Démonstration (données fictives)"
+              : "Proposé par l'IA"}
           </span>
-          {model ? <span className="topic-meta"> · {model}</span> : null}
-          <br />
           <span className="topic-meta">
             Régénérations restantes : {regenerationsRemaining} / 3
           </span>
-        </p>
+        </div>
       </div>
+
+      {personalizationLevel === "low" && (
+        <div className="topic-personalization-low" role="status">
+          <p>
+            Profil peu détaillé : ces sujets sont moins personnalisés. Complétez
+            votre profil pour de meilleures propositions.
+          </p>
+          {onEditProfile && (
+            <button
+              type="button"
+              className="secondary"
+              onClick={onEditProfile}
+            >
+              Compléter mon profil
+            </button>
+          )}
+        </div>
+      )}
+
+      {reviewStatus === "failed" ? (
+        <p className="topic-review-failed" role="status">
+          Relecture automatique indisponible pour cette génération.
+        </p>
+      ) : null}
 
       {error && <p role="alert">{error}</p>}
 
       <div className="topic-cards">
-        {topics.map((topic) => {
+        {(["mastery", "ambition", "discovery"] as TopicAxis[]).map((axis) => {
+          const topic = topics.find((t) => t.axis === axis);
+          const status = axisStatus?.[axis] || (topic ? "done" : "pending");
+          if (!topic || status === "pending") {
+            return (
+              <article
+                key={axis}
+                className="topic-card panel topic-card-compact topic-card-pending"
+              >
+                <div className="panelhead">
+                  <h2 className="topic-card-title">
+                    <span className="topic-card-title-text">
+                      Préparation de ce sujet…
+                    </span>
+                    <span className="topic-axis">{AXIS_LABEL[axis]}</span>
+                  </h2>
+                </div>
+                <p className="topic-pending-note" role="status">
+                  Génération et relecture en cours pour l&apos;axe{" "}
+                  {AXIS_LABEL[axis].toLowerCase()}.
+                </p>
+              </article>
+            );
+          }
+          if (status === "error") {
+            return (
+              <article
+                key={axis}
+                className="topic-card panel topic-card-compact"
+              >
+                <div className="panelhead">
+                  <h2 className="topic-card-title">
+                    <span className="topic-card-title-text">
+                      Sujet indisponible
+                    </span>
+                    <span className="topic-axis">{AXIS_LABEL[axis]}</span>
+                  </h2>
+                </div>
+              </article>
+            );
+          }
           const reason = reasons[topic.axis] || "";
           const hasReason = Boolean(reason);
           const canRegen =
-            hasReason && !busy && regenerationsRemaining > 0;
+            hasReason && !busy && regenerationsRemaining > 0 && Boolean(ticket);
           const choosingThis = pendingAxis === topic.axis;
           const regeneratingThis = regenAxis === topic.axis;
+          const readings = topic.readings ?? [];
+          const loadingReadings =
+            topic.readings === undefined ||
+            Boolean(readingsLoading[topic.axis]);
+          const keywordHints = [
+            ...topic.keywords_fr.slice(0, 4),
+            ...topic.keywords_en.slice(0, 2),
+          ];
           return (
             <article
               key={topic.axis}
@@ -277,12 +624,16 @@ export default function TopicResults({
                 {(topic.context || topic.rationale) && (
                   <div className="topic-kv topic-kv-context">
                     <strong>Contexte</strong>
-                    <p>{topic.context || topic.rationale}</p>
+                    <ClampText lines={4}>
+                      <p>{topic.context || topic.rationale}</p>
+                    </ClampText>
                   </div>
                 )}
                 <div className="topic-kv">
                   <strong>Question</strong>
-                  <p>{topic.research_question}</p>
+                  <ClampText>
+                    <p>{topic.research_question}</p>
+                  </ClampText>
                 </div>
                 <div className="topic-kv">
                   <strong>Hypothèses</strong>
@@ -292,13 +643,33 @@ export default function TopicResults({
                     ))}
                   </ul>
                 </div>
+                {topic.hypothesis_tests && topic.hypothesis_tests.length > 0 ? (
+                  <details className="topic-hypothesis-tests">
+                    <summary>Comment tester les hypothèses</summary>
+                    <ul>
+                      {topic.hypothesis_tests.map((ht) => (
+                        <li key={ht.hypothesis_index}>
+                          <strong>H{ht.hypothesis_index + 1}</strong> —{" "}
+                          {ht.comparison_or_variable}
+                          {ht.data_source ? (
+                            <span> · Donnée : {ht.data_source}</span>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : null}
                 <div className="topic-kv">
                   <strong>Terrain / corpus</strong>
-                  <p>{topic.field_or_corpus}</p>
+                  <ClampText>
+                    <p>{topic.field_or_corpus}</p>
+                  </ClampText>
                 </div>
                 <div className="topic-kv">
                   <strong>Méthode</strong>
-                  <p>{topic.method}</p>
+                  <ClampText>
+                    <p>{topic.method}</p>
+                  </ClampText>
                 </div>
                 <div className="topic-kv topic-kv-inline">
                   <strong>Faisabilité</strong>
@@ -319,11 +690,74 @@ export default function TopicResults({
                       : ""}
                   </p>
                 </div>
+                {typeof topic.estimated_hours === "number" ? (
+                  <p className="topic-fieldwork-hours" role="status">
+                    Charge estimée de collecte et d&apos;analyse : ~
+                    {topic.estimated_hours} h sur {availableFieldHours} h
+                    disponibles
+                  </p>
+                ) : null}
+                {topic.literature_density === "high" ? (
+                  <p className="topic-literature-density" role="status">
+                    Thème déjà bien étudié : précisez ce que votre travail
+                    apporte de nouveau.
+                  </p>
+                ) : null}
+                {topic.warnings && topic.warnings.length > 0
+                  ? topic.warnings.map((w) => (
+                      <p
+                        key={w.code}
+                        className={
+                          "topic-warning" +
+                          (w.code === "UNDER_SCALE"
+                            ? " topic-warning-under-scale"
+                            : "")
+                        }
+                        role="status"
+                      >
+                        {w.message}
+                      </p>
+                    ))
+                  : null}
+                {topic.expected_contribution ? (
+                  <div className="topic-kv">
+                    <strong>Apport attendu</strong>
+                    <ClampText>
+                      <p>{topic.expected_contribution}</p>
+                    </ClampText>
+                  </div>
+                ) : null}
+                {(topic.rationale ||
+                  (topic.profile_links && topic.profile_links.length > 0)) && (
+                  <div className="topic-kv topic-why">
+                    <strong>Pourquoi ce sujet pour vous</strong>
+                    {topic.rationale ? (
+                      <ClampText>
+                        <p>{topic.rationale}</p>
+                      </ClampText>
+                    ) : null}
+                    {topic.profile_links && topic.profile_links.length > 0 ? (
+                      <ul className="topic-profile-links">
+                        {topic.profile_links.map((link, i) => (
+                          <li key={i}>
+                            <em>{link.field}</em> — {link.profile_value} →{" "}
+                            {link.use}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                )}
                 <div className="topic-keywords">
                   {topic.keywords_fr.slice(0, 4).map((k) => (
                     <span key={k}>{k}</span>
                   ))}
                 </div>
+                <ReadingsBlock
+                  readings={readings}
+                  loading={loadingReadings}
+                  keywords={keywordHints}
+                />
               </div>
 
               <div className="topic-card-actions">
@@ -332,12 +766,14 @@ export default function TopicResults({
                   className={
                     choosingThis ? "primary is-busy" : "primary"
                   }
-                  disabled={busy || hasReason}
+                  disabled={busy || hasReason || !ticket}
                   aria-busy={choosingThis || undefined}
                   title={
                     hasReason
                       ? "Effacez le motif ou régénérez avant de choisir"
-                      : undefined
+                      : !ticket
+                        ? "Attendez la fin de la génération des trois sujets"
+                        : undefined
                   }
                   onClick={() => chooseTopic(topic)}
                 >

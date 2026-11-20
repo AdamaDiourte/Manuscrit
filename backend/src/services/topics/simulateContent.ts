@@ -60,7 +60,7 @@ export function simulateTopics(
   const topics: GeneratedTopic[] = [
     {
       axis: "mastery",
-      title: `${theme} : une lecture maîtrisée pour un ${typeLabel.toLowerCase()}`,
+      title: `[DÉMO] ${theme} : une lecture maîtrisée pour un ${typeLabel.toLowerCase()}`,
       context: `Le débat contemporain sur ${theme} croise des lectures déjà stabilisées en ${discipline}. Ce cadrage part d’un enjeu disciplinaire reconnu, sans forcer une ouverture trop large.`,
       research_question: `Comment analyser ${theme} en mobilisant les acquis déjà solides en ${discipline}, ${base} ?`,
       hypotheses: [
@@ -88,10 +88,47 @@ export function simulateTopics(
       keywords_fr: [discipline, theme, "méthode", "faisabilité", "cadrage"],
       keywords_en: ["research design", "feasibility", discipline, "methods"],
       ethical_notes: null,
+      research_object: theme,
+      expected_contribution:
+        "Préciser, sur un corpus documentaire borné, comment les acquis disciplinaires structurent une première lecture crédible de l'objet.",
+      fieldwork_plan: [
+        { unit: "document", quantity: 30 },
+        { unit: "interview", quantity: 4 },
+      ],
+      hypothesis_tests: [
+        {
+          hypothesis_index: 0,
+          comparison_or_variable: "présence vs absence d'outils déjà maîtrisés",
+          data_source: "grille d'analyse des 30 documents",
+        },
+        {
+          hypothesis_index: 1,
+          comparison_or_variable: "accès déclaré vs accès partiel",
+          data_source: "4 entretiens de cadrage",
+        },
+        {
+          hypothesis_index: 2,
+          comparison_or_variable: "réemploi des travaux antérieurs",
+          data_source: "note de synthèse documentaire",
+        },
+      ],
+      profile_links: [
+        {
+          field: "Discipline principale",
+          profile_value: discipline,
+          use: "Ancrage disciplinaire du sujet de démonstration.",
+        },
+        {
+          field: "Type de projet",
+          profile_value: typeLabel,
+          use: "Adaptation du niveau d'exigence.",
+        },
+      ],
+      readings: [],
     },
     {
       axis: "ambition",
-      title: `Renforcer une compétence nouvelle autour de ${theme}`,
+      title: `[DÉMO] Renforcer une compétence nouvelle autour de ${theme}`,
       context: `Face aux exigences actuelles du ${typeLabel.toLowerCase()}, ${theme} gagne à être traité avec une montée en compétence méthodologique. Le contexte est celui d’un apprentissage borné, utile et datable.`,
       research_question: `De quelle façon une montée en compétence méthodologique peut-elle éclairer ${theme} dans un ${typeLabel.toLowerCase()} ?`,
       hypotheses: [
@@ -125,11 +162,48 @@ export function simulateTopics(
       ],
       keywords_en: ["skills", "protocol", "methods training", "pilot study"],
       ethical_notes:
-        "Si des personnes sont enquêtées, prévoir information claire et anonymisation dès le pilote.",
+        "Information des participants, consentement, pseudonymisation et conservation sécurisée des données dès le pilote.",
+      research_object: theme,
+      expected_contribution:
+        "Tester l'apport d'une méthode encore peu maîtrisée sur un sous-corpus pilote, sans viser une simple confirmation d'un résultat connu.",
+      fieldwork_plan: [
+        { unit: "interview", quantity: 6 },
+        { unit: "document", quantity: 20 },
+      ],
+      hypothesis_tests: [
+        {
+          hypothesis_index: 0,
+          comparison_or_variable: "avant/après apprentissage de la méthode",
+          data_source: "6 entretiens pilotes",
+        },
+        {
+          hypothesis_index: 1,
+          comparison_or_variable: "présence d'un livrable protocolaire",
+          data_source: "grille produite sur 20 documents",
+        },
+        {
+          hypothesis_index: 2,
+          comparison_or_variable: "semaines dédiées vs calendrier saturé",
+          data_source: "journal de bord du pilote",
+        },
+      ],
+      profile_links: [
+        {
+          field: "Discipline principale",
+          profile_value: discipline,
+          use: "Base du sujet ambition (démonstration).",
+        },
+        {
+          field: "Type de projet",
+          profile_value: typeLabel,
+          use: "Calibrage de l'ambition.",
+        },
+      ],
+      readings: [],
     },
     {
       axis: "discovery",
-      title: `Un angle voisin pour relire ${theme}`,
+      title: `[DÉMO] Un angle voisin pour relire ${theme}`,
       context: `Les discussions récentes autour de ${theme} laissent place à un détour disciplinaire contrôlé. L’angle voisin éclaire l’objet sans quitter le cadre du projet.`,
       research_question: `Quel éclairage apporte une perspective voisine de ${discipline} sur ${theme}, sans sortir des contraintes du projet ?`,
       hypotheses: [
@@ -167,6 +241,40 @@ export function simulateTopics(
         "exploration",
       ],
       ethical_notes: null,
+      research_object: theme,
+      expected_contribution:
+        "Montrer ce qu'un angle voisin apporte concrètement à la lecture de l'objet, sur un cas unique borné.",
+      fieldwork_plan: [{ unit: "document", quantity: 40 }],
+      hypothesis_tests: [
+        {
+          hypothesis_index: 0,
+          comparison_or_variable: "grille disciplinaire vs grille voisine",
+          data_source: "40 documents du cas unique",
+        },
+        {
+          hypothesis_index: 1,
+          comparison_or_variable: "mots-clés du champ voisin",
+          data_source: "sous-corpus annoté",
+        },
+        {
+          hypothesis_index: 2,
+          comparison_or_variable: "un seul objet empirique borné",
+          data_source: "dossier documentaire unique",
+        },
+      ],
+      profile_links: [
+        {
+          field: "Discipline principale",
+          profile_value: discipline,
+          use: "Ouverture contrôlée depuis la discipline déclarée.",
+        },
+        {
+          field: "Type de projet",
+          profile_value: typeLabel,
+          use: "Bornage de l'angle de découverte.",
+        },
+      ],
+      readings: [],
     },
   ];
 

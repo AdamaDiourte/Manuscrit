@@ -18,7 +18,8 @@ export function checkRateLimit(
   return { ok: true };
 }
 
-/** Topics generation: 8 requests / 10 minutes per user. */
+/** Topics generation: 8 req / 10 min (prod) ; plus large hors production pour itérer. */
 export function topicsRateLimit(uid: string) {
-  return checkRateLimit("topics:" + uid, 8, 10 * 60 * 1000);
+  const limit = process.env.NODE_ENV === "production" ? 8 : 40;
+  return checkRateLimit("topics:" + uid, limit, 10 * 60 * 1000);
 }

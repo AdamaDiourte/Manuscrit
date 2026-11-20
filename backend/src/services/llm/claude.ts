@@ -1,7 +1,8 @@
 /**
  * Couche d’accès Claude (Anthropic / Bedrock / Vertex).
  * Ne journalise jamais prompts, contenus ni clés.
- * Non branchée sur les routes research tant que AI_PROVIDER n’est pas activé (lots 2/3).
+ * Branchée sur le pipeline async et, si AI_PROVIDER=anthropic|bedrock|vertex,
+ * sur le chemin sync / topics via callClaudeChat.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -44,6 +45,8 @@ export type ClaudeContent = string | ClaudeContentPart[];
 export type ClaudeUsage = {
   inputTokens: number;
   outputTokens: number;
+  /** Tokens de réflexion s’ils sont exposés par l’API (sinon 0). */
+  thinkingTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
 };
@@ -306,15 +309,32 @@ function systemBlocks(system: string, enableCache: boolean) {
 function usageFrom(raw: {
   input_tokens?: number | null;
   output_tokens?: number | null;
+  thinking_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  output_tokens_details?: { thinking_tokens?: number | null } | null;
 } | null | undefined): ClaudeUsage {
+  const thinkingTokens =
+    raw?.thinking_tokens ??
+    raw?.output_tokens_details?.thinking_tokens ??
+    0;
   return {
     inputTokens: raw?.input_tokens ?? 0,
     outputTokens: raw?.output_tokens ?? 0,
+    thinkingTokens: thinkingTokens ?? 0,
     cacheCreationInputTokens: raw?.cache_creation_input_tokens ?? 0,
     cacheReadInputTokens: raw?.cache_read_input_tokens ?? 0,
   };
+}
+
+/** Modèles qui refusent temperature + tool_choice forcé (famille 5.x). */
+export function modelUsesAdaptiveThinking(model: string): boolean {
+  return /claude-(sonnet|haiku|opus)-5/i.test(model);
+}
+
+/** between_tools n’est documenté / supporté que pour Sonnet 5.5. */
+function supportsBetweenToolsThinking(model: string): boolean {
+  return /claude-sonnet-5-5/i.test(model);
 }
 
 function textFromMessage(content: Array<{ type: string; text?: string }>): string {
@@ -404,6 +424,352 @@ export async function callClaude<T extends z.ZodType>(
     model: message.model,
     usage: usageFrom(message.usage),
   };
+}
+
+export type CallClaudeChatParams = {
+  tier: ClaudeTier;
+  system: string;
+  user: string;
+  maxTokens: number;
+  temperature?: number;
+};
+
+/**
+ * Appel Claude texte libre (JSON demandé dans le prompt) — chemin sync / topics.
+ * Ne journalise jamais prompts ni contenus.
+ */
+export async function callClaudeChat(
+  params: CallClaudeChatParams,
+): Promise<{ content: string; model: string; usage: ClaudeUsage }> {
+  const provider = resolveAiProvider();
+  const client = getClient();
+  const caching = providerCapabilities(provider).promptCaching;
+  const message = await withRetries(() =>
+    client.messages.create({
+      model: modelForTier(params.tier),
+      max_tokens: params.maxTokens,
+      ...(typeof params.temperature === "number"
+        ? { temperature: params.temperature }
+        : {}),
+      system: systemBlocks(params.system, caching),
+      messages: [{ role: "user", content: params.user }],
+    }),
+  );
+  return {
+    content: textFromMessage(
+      message.content as Array<{ type: string; text?: string }>,
+    ),
+    model: message.model,
+    usage: usageFrom(message.usage),
+  };
+}
+
+export type CallClaudeStructuredParams = {
+  system: string;
+  user: string;
+  toolName: string;
+  inputSchema: Record<string, unknown>;
+  /** Schéma Zod pour output_config (obligatoire sur modèles à thinking adaptatif). */
+  zodSchema?: z.ZodType;
+  /** Override model id; defaults to AI_MODEL_SMART. */
+  model?: string;
+  /** Ignoré sur Sonnet 5.5 (refus API) ; utilisé sur les autres modèles. */
+  temperature?: number;
+  maxTokens?: number;
+  toolDescription?: string;
+  /** effort bas par défaut pour sujets/docs (latence). */
+  effort?: "low" | "medium" | "high";
+};
+
+export type StructuredCallMode =
+  | "tool_forced"
+  | "output_config"
+  | "json_text";
+
+function apiMessageLooksLike(err: unknown, re: RegExp): boolean {
+  if (!(err instanceof APIError)) return false;
+  return re.test(String(err.message || ""));
+}
+
+function decodeJsonPayload(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("Réponse Claude : JSON invalide.");
+    return JSON.parse(match[0]);
+  }
+}
+
+function textFromBlocks(
+  blocks: Array<{ type: string; text?: string }>,
+): string {
+  return blocks
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("\n")
+    .trim();
+}
+
+/**
+ * Sortie structurée Claude.
+ * Sur Sonnet 5.5 : thinking between_tools + effort bas + output_config
+ * (tool_choice forcé et temperature sont refusés par l’API).
+ * Ne journalise jamais prompts ni contenus.
+ */
+export async function callClaudeStructured<T>(
+  params: CallClaudeStructuredParams,
+): Promise<{
+  data: T;
+  model: string;
+  usage: ClaudeUsage;
+  latencyMs: number;
+  mode: StructuredCallMode;
+}> {
+  const client = getClient();
+  const caching = providerCapabilities(resolveAiProvider()).promptCaching;
+  const model =
+    (params.model && params.model.trim()) ||
+    getClaudeSettings().modelSmart;
+  const started = Date.now();
+  const effort = params.effort || "low";
+  const maxTokens = params.maxTokens ?? 6000;
+  const userHint =
+    params.user +
+    `\n\nProduis uniquement la sortie structurée demandée (outil ${params.toolName}).`;
+
+  // —— Chemin modèles 5.x (thinking adaptatif / refus tool forcé) ——
+  if (modelUsesAdaptiveThinking(model) && params.zodSchema) {
+    const body: Record<string, unknown> = {
+      model,
+      max_tokens: maxTokens,
+      output_config: {
+        effort,
+        format: zodOutputFormat(params.zodSchema),
+      },
+      system: systemBlocks(params.system, caching),
+      messages: [{ role: "user", content: userHint }],
+    };
+    // Sonnet 5.5 : coupe la réflexion upfront (sinon effort high par défaut).
+    if (supportsBetweenToolsThinking(model)) {
+      body.thinking = { type: "between_tools" };
+    } else {
+      // Haiku / autres 5.x : tenter disabled ; repli sans thinking si refusé.
+      body.thinking = { type: "disabled" };
+    }
+
+    try {
+      const message = (await withRetries(() =>
+        client.messages.create(
+          body as unknown as Parameters<typeof client.messages.create>[0],
+        ),
+      )) as {
+        content: Array<{ type: string; text?: string }>;
+        model: string;
+        usage: Parameters<typeof usageFrom>[0];
+      };
+      const text = textFromBlocks(message.content);
+      if (!text)
+        throw new Error("Réponse Claude : sortie structurée manquante.");
+      return {
+        data: decodeJsonPayload(text) as T,
+        model: message.model,
+        usage: usageFrom(message.usage),
+        latencyMs: Date.now() - started,
+        mode: "output_config",
+      };
+    } catch (err) {
+      if (
+        body.thinking &&
+        apiMessageLooksLike(err, /thinking/i)
+      ) {
+        delete body.thinking;
+        const message = (await withRetries(() =>
+          client.messages.create(
+            body as unknown as Parameters<typeof client.messages.create>[0],
+          ),
+        )) as {
+          content: Array<{ type: string; text?: string }>;
+          model: string;
+          usage: Parameters<typeof usageFrom>[0];
+        };
+        const text = textFromBlocks(message.content);
+        if (!text)
+          throw new Error("Réponse Claude : sortie structurée manquante.");
+        return {
+          data: decodeJsonPayload(text) as T,
+          model: message.model,
+          usage: usageFrom(message.usage),
+          latencyMs: Date.now() - started,
+          mode: "output_config",
+        };
+      }
+      throw err;
+    }
+  }
+
+  // —— Chemin classique : tool_choice forcé ——
+  try {
+    const message = await withRetries(() =>
+      client.messages.create({
+        model,
+        max_tokens: maxTokens,
+        ...(typeof params.temperature === "number"
+          ? { temperature: params.temperature }
+          : {}),
+        system: systemBlocks(params.system, caching),
+        messages: [{ role: "user", content: params.user }],
+        tools: [
+          {
+            name: params.toolName,
+            description:
+              params.toolDescription ||
+              `Appelle l'outil ${params.toolName} avec la structure demandée.`,
+            input_schema: params.inputSchema as {
+              type: "object";
+              properties: Record<string, unknown>;
+              [key: string]: unknown;
+            },
+            strict: true,
+          },
+        ],
+        tool_choice: { type: "tool", name: params.toolName },
+      }),
+    );
+    const blocks = message.content as Array<{
+      type: string;
+      name?: string;
+      input?: unknown;
+      text?: string;
+    }>;
+    const block = blocks.find(
+      (b) => b.type === "tool_use" && b.name === params.toolName,
+    );
+    if (block && block.input !== undefined) {
+      return {
+        data: block.input as T,
+        model: message.model,
+        usage: usageFrom(message.usage),
+        latencyMs: Date.now() - started,
+        mode: "tool_forced",
+      };
+    }
+  } catch (err) {
+    if (
+      !apiMessageLooksLike(err, /tool_choice|temperature/i) &&
+      !apiMessageLooksLike(err, /not supported|not permitted|extra input/i)
+    )
+      throw err;
+  }
+
+  // —— Repli output_config ——
+  if (params.zodSchema) {
+    try {
+      const message = await withRetries(() =>
+        client.messages.create({
+          model,
+          max_tokens: maxTokens,
+          system: systemBlocks(params.system, caching),
+          messages: [{ role: "user", content: userHint }],
+          output_config: { format: zodOutputFormat(params.zodSchema!) },
+        }),
+      );
+      const text = textFromBlocks(
+        message.content as Array<{ type: string; text?: string }>,
+      );
+      if (!text)
+        throw new Error("Réponse Claude : sortie structurée manquante.");
+      return {
+        data: decodeJsonPayload(text) as T,
+        model: message.model,
+        usage: usageFrom(message.usage),
+        latencyMs: Date.now() - started,
+        mode: "output_config",
+      };
+    } catch (err2) {
+      if (!apiMessageLooksLike(err2, /output_config|json_schema|Extra inputs/i))
+        throw err2;
+    }
+  }
+
+  // —— Dernier repli : JSON texte (toujours validé Zod côté appelant) ——
+  const message = await withRetries(() =>
+    client.messages.create({
+      model,
+      max_tokens: maxTokens,
+      system: systemBlocks(params.system, caching),
+      messages: [
+        {
+          role: "user",
+          content:
+            params.user +
+            `\n\nRéponds UNIQUEMENT avec un objet JSON valide pour ${params.toolName} (pas de markdown).`,
+        },
+      ],
+    }),
+  );
+  const text = textFromBlocks(
+    message.content as Array<{ type: string; text?: string }>,
+  );
+  if (!text) throw new Error("Réponse Claude : sortie structurée manquante.");
+  return {
+    data: decodeJsonPayload(text) as T,
+    model: message.model,
+    usage: usageFrom(message.usage),
+    latencyMs: Date.now() - started,
+    mode: "json_text",
+  };
+}
+
+/** True si le fournisseur actif a les credentials requis pour un appel réel. */
+export function isLlmConfigured(
+  envBag: Record<string, string> = process.env as Record<string, string>,
+): boolean {
+  const provider = resolveAiProvider();
+  if (provider === "anthropic")
+    return Boolean(
+      String(envBag.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || "").trim(),
+    );
+  if (provider === "bedrock")
+    return Boolean(
+      String(
+        envBag.AWS_REGION ||
+          envBag.AWS_DEFAULT_REGION ||
+          process.env.AWS_REGION ||
+          process.env.AWS_DEFAULT_REGION ||
+          "",
+      ).trim(),
+    );
+  if (provider === "vertex")
+    return Boolean(
+      String(
+        envBag.CLOUD_ML_REGION || process.env.CLOUD_ML_REGION || "",
+      ).trim() &&
+        String(
+          envBag.ANTHROPIC_VERTEX_PROJECT_ID ||
+            process.env.ANTHROPIC_VERTEX_PROJECT_ID ||
+            "",
+        ).trim(),
+    );
+  return Boolean(
+    String(envBag.AI_BASE_URL || "").trim() &&
+      String(envBag.AI_MODEL || "").trim() &&
+      String(envBag.AI_API_KEY || "").trim(),
+  );
+}
+
+/** Identifiants de cache / fingerprint pour le chemin sync. */
+export function syncAiFingerprintParts(
+  envBag: Record<string, string> = process.env as Record<string, string>,
+): [string, string] {
+  if (isClaudeProvider()) {
+    const { provider, modelSmart } = getClaudeSettings();
+    return [provider, modelSmart];
+  }
+  return [
+    String(envBag.AI_BASE_URL || "").trim(),
+    String(envBag.AI_MODEL || "").trim(),
+  ];
 }
 
 /** Soumet un lot Message Batches (custom_id = unitId). Anthropic direct uniquement. */

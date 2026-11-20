@@ -60,7 +60,7 @@ Saisie UI : `frontend/src/components/copilot/CorpusOrganizer.tsx` → `update(ke
 | Champs design dérivés du sujet | `interests`, `aims`, `methods`, `literature` | `draftFromTopic` dans `ResearchStudio.tsx` → `copilot` |
 | Type projet dans archive | `topicArchive[].projectType` | depuis `answers.project_type` uniquement |
 
-Champs questionnaire (IDs) : `project_type`, `project_type_other`, `discipline_main`, `discipline_main_other`, `specialty`, `topic_freedom`, `imposed_by`, `imposed_theme`, `lab_themes`, `deadline_range`, `expected_length`, `weekly_time`, `writing_language`, `writing_language_other`, `disciplines_studied`, `favorite_courses_1..3`, `liked_aspects`, `disliked_courses`, `inspiring_concept`, `curious_discipline`, `past_works`, `continue_or_avoid`, `continue_or_avoid_detail`, `methods_skills`, `software`, `method_to_learn`, `method_to_learn_other`.
+Champs questionnaire (IDs) : `project_type`, `project_type_other`, `discipline_main`, `discipline_main_other`, `specialty`, `topic_freedom`, `imposed_by`, `imposed_theme`, `lab_themes`, `deadline_range`, `expected_length`, `weekly_time`, `writing_language`, `writing_language_other`, `disciplines_studied`, `favorite_courses` (cours séparés par « ; » ; migration depuis `favorite_courses_1..3`), `liked_aspects`, `disliked_courses`, `inspiring_concept`, `curious_discipline`, `past_works`, `continue_or_avoid`, `continue_or_avoid_detail`, `methods_skills`, `software`, `method_to_learn`, `method_to_learn_other`.
 
 ### 1.3 Projet workspace
 

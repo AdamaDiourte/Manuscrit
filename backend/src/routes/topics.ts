@@ -6,14 +6,35 @@ import {
   validateConsents,
 } from "../services/topics/validateAnswers";
 import { generateTopics } from "../services/topics/generate";
+import { startTopicsGenerateJob } from "../services/topics/runTopicsJob";
+import {
+  getTopicsJob,
+  jobPublicView,
+} from "../services/topics/topicsJobs";
 import { generateTopicDocument } from "../services/topics/generateDocument";
 import {
+  appendRejectedTitle,
   consumeRegen,
   issueTicket,
+  normalizeTicketSnapshot,
   verifyTicket,
 } from "../services/topics/generationTicket";
+import {
+  getCachedReadings,
+  setCachedReadings,
+  topicFingerprint,
+} from "../services/topics/readingsCache";
+import { findReadingsForTopic } from "../services/scholarly/findReadings";
 import { z } from "zod";
 import { NOTICE_VERSION } from "../../../shared/research/notice";
+import type {
+  GeneratedTopic,
+  LiteratureDensity,
+  TopicAxis,
+  VerifiedReading,
+} from "../../../shared/research/topicTypes";
+import type { SourcesStatusMap } from "../services/scholarly/sourceTypes";
+import type { GenerateEffort } from "../services/topics/generate";
 
 const reply = (body: unknown, status = 200) =>
   Response.json(body, {
@@ -27,6 +48,67 @@ function uidOf(req: Request) {
 
 function configOf() {
   return env as unknown as Record<string, string>;
+}
+
+/** Simulation only outside production and when explicitly allowed. */
+function acceptSimulate(requested: unknown): boolean {
+  return (
+    Boolean(requested) &&
+    process.env.NODE_ENV !== "production" &&
+    process.env.ALLOW_SIMULATION === "true"
+  );
+}
+
+async function resolveReadingsForTopic(
+  topic: GeneratedTopic,
+  answers: Record<string, unknown>,
+): Promise<{
+  readings: VerifiedReading[];
+  rejectedCount: number;
+  cached: boolean;
+  sources_status: SourcesStatusMap;
+  literature_density: LiteratureDensity;
+}> {
+  const fp = topicFingerprint(topic);
+  const fromCache = await getCachedReadings(fp);
+  if (fromCache) {
+    return {
+      readings: fromCache.readings || [],
+      rejectedCount: 0,
+      cached: true,
+      sources_status: fromCache.sources_status || {
+        openalex: "ok",
+        hal: "ok",
+      },
+      literature_density:
+        fromCache.literature_density ||
+        topic.literature_density ||
+        "normal",
+    };
+  }
+  const {
+    readings,
+    rejectedCount,
+    cacheable,
+    sources_status,
+    literature_density,
+  } = await findReadingsForTopic(topic, answers);
+  if (cacheable) {
+    setCachedReadings(fp, readings, { sources_status, literature_density });
+  }
+  return {
+    readings,
+    rejectedCount,
+    cached: false,
+    sources_status,
+    literature_density,
+  };
+}
+
+function acceptEffort(raw: unknown): GenerateEffort | undefined {
+  if (process.env.NODE_ENV === "production") return undefined;
+  if (raw === "low" || raw === "medium" || raw === "high") return raw;
+  return undefined;
 }
 
 /**
@@ -62,12 +144,13 @@ export async function POST_draft(req: Request) {
       },
       501,
     );
-  } catch (e: any) {
-    if (e?.name === "ZodError")
+  } catch (e: unknown) {
+    const err = e as { name?: string; message?: string; status?: number };
+    if (err?.name === "ZodError")
       return reply({ error: "Preuve de consentement invalide." }, 400);
     return reply(
-      { error: e.message || "Brouillon refusé." },
-      Number.isInteger(e.status) ? e.status : 400,
+      { error: err.message || "Brouillon refusé." },
+      Number.isInteger(err.status) ? (err.status as number) : 400,
     );
   }
 }
@@ -94,7 +177,6 @@ export async function POST_generate(req: Request) {
     const body = await req.json();
     const consents = validateConsents(body.consents);
     const answers = validateAnswersPayload(body.answers);
-    // Consent proof is acknowledged in the response only (no DB write in étape A).
     const consentMeta = {
       ageOver15: consents.ageOver15,
       noticeAccepted: consents.noticeAccepted,
@@ -103,39 +185,46 @@ export async function POST_generate(req: Request) {
       noticeVersion: NOTICE_VERSION,
     };
 
-    const simulate = Boolean(body.simulate);
+    const simulate = acceptSimulate(body.simulate);
+    const effort = acceptEffort(body.effort);
     if (!simulate) token = await reserveAnalysis(bucket, prefix);
-    const result = await generateTopics(answers, config, undefined, {
-      simulate,
-    });
-    const ticket = issueTicket(uid, config, result.topics, 3);
+    const reservedToken = token;
     token = "";
-    // Technical metadata only — never log answers or prompts.
+    const job = startTopicsGenerateJob({
+      uid,
+      answers,
+      env: config,
+      simulate,
+      effort,
+      onQuotaRelease: () => {
+        if (reservedToken)
+          void releaseAnalysis(bucket, prefix, reservedToken);
+      },
+    });
+
     console.info(
       JSON.stringify({
         event: "topics.generate",
         uidPseudo: uid.slice(0, 8),
-        status: "ok",
+        status: "started",
         at: new Date().toISOString(),
-        tokens: result.tokens ?? null,
-        model: result.model,
-        simulated: Boolean(result.simulated),
+        job_id: job.id.slice(0, 8),
+        effort: effort || "low",
+        simulated: simulate,
       }),
     );
+
     return reply({
-      topics: result.topics,
-      model: result.model,
-      ticket,
-      regenerationsRemaining: 3,
-      aiGenerated: !result.simulated,
-      simulated: Boolean(result.simulated),
+      job_id: job.id,
+      status: "running",
       consents: consentMeta,
       noticeVersion: NOTICE_VERSION,
       persistence: "none",
     });
-  } catch (e: any) {
+  } catch (e: unknown) {
     if (token) await releaseAnalysis(bucket, prefix, token);
-    if (e?.name === "ZodError")
+    const err = e as { name?: string; message?: string; status?: number };
+    if (err?.name === "ZodError")
       return reply(
         { error: "La réponse de l’IA ou les consentements sont invalides." },
         502,
@@ -146,14 +235,31 @@ export async function POST_generate(req: Request) {
         uidPseudo: uid.slice(0, 8),
         status: "error",
         at: new Date().toISOString(),
-        code: Number.isInteger(e.status) ? e.status : 502,
+        code: Number.isInteger(err.status) ? err.status : 502,
       }),
     );
     return reply(
-      { error: e.message || "Génération indisponible." },
-      Number.isInteger(e.status) ? e.status : 502,
+      { error: err.message || "Génération indisponible." },
+      Number.isInteger(err.status) ? (err.status as number) : 502,
     );
   }
+}
+
+export async function GET_job(req: Request) {
+  const uid = uidOf(req);
+  if (!uid) return reply({ error: "Connexion requise." }, 403);
+  const url = new URL(req.url);
+  const parts = url.pathname.split("/");
+  const jobId = parts[parts.length - 1] || "";
+  if (!jobId || jobId.length < 8)
+    return reply({ error: "Identifiant de job manquant." }, 400);
+  const job = getTopicsJob(jobId, uid);
+  if (!job) return reply({ error: "Job introuvable ou expiré." }, 404);
+  const view = jobPublicView(job);
+  return reply({
+    ...view,
+    noticeVersion: NOTICE_VERSION,
+  });
 }
 
 const regenSchema = z.object({
@@ -165,28 +271,24 @@ const regenSchema = z.object({
   simulate: z.boolean().optional(),
 });
 
-const topicPayloadSchema = z.object({
+const readingsSchema = z.object({
+  ticket: z.string().min(10),
   axis: z.enum(["mastery", "ambition", "discovery"]),
-  title: z.string().trim().min(3).max(220),
-  context: z.string().trim().max(320).optional().default(""),
-  research_question: z.string().trim().min(8).max(600),
-  hypotheses: z.array(z.string().trim().min(3).max(400)).min(1).max(5),
-  field_or_corpus: z.string().trim().min(3).max(500),
-  method: z.string().trim().min(3).max(500),
-  feasibility: z.object({
-    level: z.enum(["high", "medium", "low"]),
-    risks: z.array(z.string().trim().min(2).max(300)).max(6),
-    first_steps: z.array(z.string().trim().min(2).max(300)).min(1).max(6),
-  }),
-  rationale: z.string().trim().min(8).max(800),
-  keywords_fr: z.array(z.string().trim().min(1).max(80)).min(2).max(12),
-  keywords_en: z.array(z.string().trim().min(1).max(80)).min(2).max(12),
-  ethical_notes: z.string().trim().max(800).nullable(),
+  answers: z.record(z.string(), z.unknown()),
+  consents: z.unknown().optional(),
 });
 
+/** Le client peut envoyer un topic, mais seul l'axe est lu — le contenu vient du ticket. */
 const documentSchema = z.object({
   kind: z.enum(["research_project", "work_plan"]),
-  topic: topicPayloadSchema,
+  ticket: z.string().min(10),
+  axis: z.enum(["mastery", "ambition", "discovery"]).optional(),
+  topic: z
+    .object({
+      axis: z.enum(["mastery", "ambition", "discovery"]),
+    })
+    .passthrough()
+    .optional(),
   answers: z.record(z.string(), z.unknown()),
   consents: z.unknown(),
   simulate: z.boolean().optional(),
@@ -220,11 +322,14 @@ export async function POST_regenerate(req: Request) {
         },
         429,
       );
-    const previousTopics = Array.isArray(current.topics)
-      ? (current.topics as any[])
-      : undefined;
+    const snapshot = normalizeTicketSnapshot(current.topics);
+    const previousTopics = snapshot?.topics;
     const previousTitle = previousTopics?.find((t) => t.axis === body.axis)
-      ?.title as string | undefined;
+      ?.title;
+    const rejectedTitles = appendRejectedTitle(
+      snapshot?.rejectedTitles || [],
+      previousTitle,
+    );
 
     const result = await generateTopics(
       answers,
@@ -233,16 +338,18 @@ export async function POST_regenerate(req: Request) {
         axis: body.axis,
         reason: body.reason,
         previousTitle,
-        previousTopics: previousTopics as any,
+        previousTopics,
+        rejectedTitles,
+        profile_analysis: snapshot?.profile_analysis,
       },
-      { simulate: Boolean(body.simulate) },
+      { simulate: acceptSimulate(body.simulate) },
     );
-    const { nextToken, payload } = consumeRegen(
-      body.ticket,
-      uid,
-      config,
-      result.topics,
-    );
+    const { nextToken, payload } = consumeRegen(body.ticket, uid, config, {
+      topics: result.topics,
+      rejectedTitles,
+      profile_analysis:
+        result.profile_analysis || snapshot?.profile_analysis,
+    });
 
     console.info(
       JSON.stringify({
@@ -252,7 +359,14 @@ export async function POST_regenerate(req: Request) {
         at: new Date().toISOString(),
         axis: body.axis,
         rem: payload.rem,
-        tokens: result.tokens ?? null,
+        model: result.model,
+        tokens_in: result.tokens_in ?? null,
+        tokens_out: result.tokens_out ?? null,
+        tokens_thinking: result.tokens_thinking ?? null,
+        structured_mode: result.structured_mode ?? null,
+        latency_ms: result.latency_ms,
+        attempts: result.attempts,
+        violations: result.violations,
         simulated: Boolean(result.simulated),
       }),
     );
@@ -264,11 +378,22 @@ export async function POST_regenerate(req: Request) {
       regenerationsRemaining: payload.rem,
       aiGenerated: !result.simulated,
       simulated: Boolean(result.simulated),
+      profile_analysis:
+        result.profile_analysis || snapshot?.profile_analysis,
+      personalization_level: result.personalization_level,
+      violations: result.violations,
+      attempts: result.attempts,
+      latency_ms: result.latency_ms,
+      tokens_in: result.tokens_in,
+      tokens_out: result.tokens_out,
+      tokens_thinking: result.tokens_thinking,
+      structured_mode: result.structured_mode,
       noticeVersion: NOTICE_VERSION,
       persistence: "none",
     });
-  } catch (e: any) {
-    if (e?.name === "ZodError")
+  } catch (e: unknown) {
+    const err = e as { name?: string; message?: string; status?: number };
+    if (err?.name === "ZodError")
       return reply({ error: "Demande de régénération invalide." }, 400);
     console.info(
       JSON.stringify({
@@ -276,12 +401,81 @@ export async function POST_regenerate(req: Request) {
         uidPseudo: uid.slice(0, 8),
         status: "error",
         at: new Date().toISOString(),
-        code: Number.isInteger(e.status) ? e.status : 502,
+        code: Number.isInteger(err.status) ? err.status : 502,
       }),
     );
     return reply(
-      { error: e.message || "Régénération indisponible." },
-      Number.isInteger(e.status) ? e.status : 502,
+      { error: err.message || "Régénération indisponible." },
+      Number.isInteger(err.status) ? (err.status as number) : 502,
+    );
+  }
+}
+
+/** Deferred verified readings for one axis (topic from ticket only). */
+export async function POST_readings(req: Request) {
+  const uid = uidOf(req);
+  const config = configOf();
+  if (!uid) return reply({ error: "Connexion requise." }, 403);
+
+  const limited = topicsRateLimit(uid);
+  if (!limited.ok)
+    return reply(
+      {
+        error: "Trop de demandes. Réessayez dans quelques minutes.",
+        retryAfterSec: limited.retryAfterSec,
+      },
+      429,
+    );
+
+  try {
+    const body = readingsSchema.parse(await req.json());
+    if (body.consents !== undefined) validateConsents(body.consents);
+    const answers = validateAnswersPayload(body.answers);
+    const current = verifyTicket(body.ticket, uid, config);
+    const snapshot = normalizeTicketSnapshot(current.topics);
+    const topic = snapshot?.topics?.find((t) => t.axis === body.axis);
+    if (!topic)
+      return reply({ error: "Sujet introuvable pour cet axe." }, 404);
+
+    const resolved = await resolveReadingsForTopic(topic, answers);
+
+    console.info(
+      JSON.stringify({
+        event: "topics.readings",
+        uidPseudo: uid.slice(0, 8),
+        status: "ok",
+        at: new Date().toISOString(),
+        axis: body.axis as TopicAxis,
+        cached: resolved.cached,
+        count: resolved.readings.length,
+        rejected: resolved.rejectedCount,
+      }),
+    );
+
+    return reply({
+      axis: body.axis,
+      readings: resolved.readings,
+      rejectedCount: resolved.rejectedCount,
+      sources_status: resolved.sources_status,
+      literature_density: resolved.literature_density,
+      noticeVersion: NOTICE_VERSION,
+    });
+  } catch (e: unknown) {
+    const err = e as { name?: string; message?: string; status?: number };
+    if (err?.name === "ZodError")
+      return reply({ error: "Demande de lectures invalide." }, 400);
+    console.info(
+      JSON.stringify({
+        event: "topics.readings",
+        uidPseudo: uid.slice(0, 8),
+        status: "error",
+        at: new Date().toISOString(),
+        code: Number.isInteger(err.status) ? err.status : 502,
+      }),
+    );
+    return reply(
+      { error: err.message || "Lectures indisponibles." },
+      Number.isInteger(err.status) ? (err.status as number) : 502,
     );
   }
 }
@@ -305,12 +499,34 @@ export async function POST_document(req: Request) {
     const body = documentSchema.parse(await req.json());
     validateConsents(body.consents);
     const answers = validateAnswersPayload(body.answers);
+    const current = verifyTicket(body.ticket, uid, config);
+    const snapshot = normalizeTicketSnapshot(current.topics);
+    const axis =
+      body.axis ||
+      (body.topic && typeof body.topic.axis === "string"
+        ? body.topic.axis
+        : undefined);
+    if (!axis)
+      return reply({ error: "Axe du sujet manquant." }, 400);
+    const ticketTopic = snapshot?.topics?.find((t) => t.axis === axis);
+    if (!ticketTopic)
+      return reply({ error: "Sujet introuvable pour ce jeton." }, 404);
+
+    // Sécurité : ignorer tout contenu topic client — uniquement le ticket.
+    const resolved = await resolveReadingsForTopic(ticketTopic, answers);
+    const topic: GeneratedTopic = {
+      ...ticketTopic,
+      literature_density: resolved.literature_density,
+      readings: resolved.readings,
+    };
+
     const result = await generateTopicDocument({
       answers,
-      topic: body.topic,
+      topic,
       kind: body.kind,
       env: config,
-      simulate: Boolean(body.simulate),
+      simulate: acceptSimulate(body.simulate),
+      profile_analysis: snapshot?.profile_analysis,
     });
 
     console.info(
@@ -322,6 +538,8 @@ export async function POST_document(req: Request) {
         kind: body.kind,
         model: result.model,
         simulated: result.simulated,
+        readings_count: resolved.readings.length,
+        cited_count: result.bibliography?.cited.length ?? 0,
       }),
     );
 
@@ -331,10 +549,12 @@ export async function POST_document(req: Request) {
       model: result.model,
       simulated: result.simulated,
       aiGenerated: !result.simulated,
+      bibliography: result.bibliography,
       noticeVersion: NOTICE_VERSION,
     });
-  } catch (e: any) {
-    if (e?.name === "ZodError")
+  } catch (e: unknown) {
+    const err = e as { name?: string; message?: string; status?: number };
+    if (err?.name === "ZodError")
       return reply({ error: "Demande de document invalide." }, 400);
     console.info(
       JSON.stringify({
@@ -342,12 +562,12 @@ export async function POST_document(req: Request) {
         uidPseudo: uid.slice(0, 8),
         status: "error",
         at: new Date().toISOString(),
-        code: Number.isInteger(e.status) ? e.status : 502,
+        code: Number.isInteger(err.status) ? err.status : 502,
       }),
     );
     return reply(
-      { error: e.message || "Document indisponible." },
-      Number.isInteger(e.status) ? e.status : 502,
+      { error: err.message || "Document indisponible." },
+      Number.isInteger(err.status) ? (err.status as number) : 502,
     );
   }
 }

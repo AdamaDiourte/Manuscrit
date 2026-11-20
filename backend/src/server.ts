@@ -1,3 +1,4 @@
+import "./loadEnv";
 import express, {type ErrorRequestHandler} from "express";
 import {resolve,dirname} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -40,7 +41,9 @@ app.get("/api/billing",adapter(billing.GET,origin));
 app.post("/api/billing",adapter(billing.POST,origin));
 app.post("/api/topics/draft",adapter(topics.POST_draft,origin));
 app.post("/api/topics/generate",adapter(topics.POST_generate,origin));
+app.get("/api/topics/jobs/:id",adapter(topics.GET_job,origin));
 app.post("/api/topics/regenerate",adapter(topics.POST_regenerate,origin));
+app.post("/api/topics/readings",adapter(topics.POST_readings,origin));
 app.post("/api/topics/document",adapter(topics.POST_document,origin));
 app.use("/api",(_req,res)=>{res.sendStatus(404)});
 const assets=resolve(dirname(fileURLToPath(import.meta.url)),"../../frontend/dist");
@@ -53,5 +56,10 @@ const failure:ErrorRequestHandler=(error,_req,res,next)=>{
 app.use(failure);
 app.listen(Number(process.env.PORT||3000),host,()=>{
   startResearchWorker();
+  if (!String(process.env.OPENALEX_API_KEY || "").trim()) {
+    console.warn(
+      "Manuscrit : OPENALEX_API_KEY absente — budget OpenAlex partagé par IP (quota gratuit limité). Créez une clé sur https://openalex.org/settings/api",
+    );
+  }
   console.info("Manuscrit : serveur prêt.");
 });

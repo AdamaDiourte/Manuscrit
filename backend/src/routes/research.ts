@@ -37,7 +37,8 @@ import {
 } from "../services/billing/quotas";
 import {
   getClaudeSettings,
-  providerCapabilities,
+  isLlmConfigured,
+  syncAiFingerprintParts,
 } from "../services/llm/claude";
 import {
   emptyCoverage,
@@ -313,17 +314,8 @@ export async function POST(req: Request) {
       const jobId = crypto.randomUUID();
       const now = new Date().toISOString();
       let billingToken = "";
-      const providerRaw = String(config.AI_PROVIDER || "")
-        .trim()
-        .toLowerCase();
-      const claudeProvider =
-        providerRaw === "anthropic" ||
-        providerRaw === "bedrock" ||
-        providerRaw === "vertex";
       const forceSimulation =
-        Boolean(simulate) ||
-        (!claudeProvider &&
-          (!config.AI_MODEL || !config.AI_BASE_URL || !config.AI_API_KEY));
+        Boolean(simulate) || !isLlmConfigured(config);
 
       const materialById = new Map(
         (p.materials || []).map((m: any) => [m.id, m]),
@@ -415,13 +407,14 @@ export async function POST(req: Request) {
       revisionFeedback: mode === "corpus" ? revision : "",
       previousPlan: mode === "corpus" ? previousSections : [],
     };
+    const [syncEndpoint, syncModel] = syncAiFingerprintParts(config);
     const bytes = await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(
         JSON.stringify([
           ENGINE_VERSION,
-          config.AI_MODEL,
-          config.AI_BASE_URL,
+          syncModel,
+          syncEndpoint,
           input,
         ]),
       ),
@@ -430,11 +423,7 @@ export async function POST(req: Request) {
       x.toString(16).padStart(2, "0"),
     ).join("");
     const key = prefix + "research/" + fingerprint;
-    const wantSimulation =
-      Boolean(simulate) ||
-      !config.AI_MODEL ||
-      !config.AI_BASE_URL ||
-      !config.AI_API_KEY;
+    const wantSimulation = Boolean(simulate) || !isLlmConfigured(config);
     const scheduleOpts = scheduleOptsFromProject(p, draft);
     if (mode === "corpus" && wantSimulation) {
       const simulated = {
@@ -460,7 +449,7 @@ export async function POST(req: Request) {
     const cached = await bucket.get(key);
     if (cached)
       return reply(withWritingSchedule(await cached.json(), scheduleOpts));
-    if (!config.AI_MODEL || !config.AI_BASE_URL || !config.AI_API_KEY)
+    if (!isLlmConfigured(config))
       return reply(
         {
           error:

@@ -4,7 +4,12 @@ import { entitlement, type Plan } from "./stripe";
 import { BillingError, changeValue, readValue } from "./storage";
 export { BillingError } from "./storage";
 
-export const limits: Record<Plan, number> = { free: 1, plus: 20, pro: 60 };
+/** En local/dev, le forfait free autorise plus d’essais pour itérer sur les sujets. */
+export const limits: Record<Plan, number> = {
+  free: process.env.NODE_ENV === "production" ? 1 : 80,
+  plus: 20,
+  pro: 60,
+};
 export { unitLimitForPlan };
 const month = () => new Date().toISOString().slice(0, 7);
 const usageKey = (prefix: string, period: string) =>

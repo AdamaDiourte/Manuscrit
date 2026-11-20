@@ -28,6 +28,93 @@ export const topicDocumentSchema = z.object({
   sections: z.array(sectionSchema).min(3).max(16),
 });
 
+/** Schéma plat pour output_config (repli si tool_choice refusé). */
+export const proposeDocumentLlmSchema = z.object({
+  kind: z.enum(["research_project", "work_plan"]),
+  projectType: z.string(),
+  title: z.string(),
+  subtitle: z.string().optional(),
+  sections: z.array(
+    z.object({
+      id: z.string(),
+      heading: z.string(),
+      paragraphs: z.array(z.string()),
+      bullets: z.array(z.string()).optional(),
+      table: z
+        .object({
+          headers: z.array(z.string()),
+          rows: z.array(z.array(z.string())),
+        })
+        .optional(),
+    }),
+  ),
+});
+
+/** JSON Schema for Anthropic tool input_schema — propose_document. */
+export const proposeDocumentInputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["research_project", "work_plan"] },
+    projectType: { type: "string", minLength: 1, maxLength: 40 },
+    title: { type: "string", minLength: 3, maxLength: 220 },
+    subtitle: { type: "string", maxLength: 300 },
+    sections: {
+      type: "array",
+      minItems: 3,
+      maxItems: 16,
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", minLength: 1, maxLength: 80 },
+          heading: { type: "string", minLength: 2, maxLength: 200 },
+          paragraphs: {
+            type: "array",
+            items: { type: "string", minLength: 8, maxLength: 4000 },
+            minItems: 1,
+            maxItems: 12,
+          },
+          bullets: {
+            type: "array",
+            items: { type: "string", minLength: 2, maxLength: 400 },
+            maxItems: 12,
+          },
+          table: {
+            type: "object",
+            properties: {
+              headers: {
+                type: "array",
+                items: { type: "string", minLength: 1, maxLength: 80 },
+                minItems: 2,
+                maxItems: 8,
+              },
+              rows: {
+                type: "array",
+                items: {
+                  type: "array",
+                  items: { type: "string", minLength: 1, maxLength: 400 },
+                  minItems: 2,
+                  maxItems: 8,
+                },
+                minItems: 2,
+                maxItems: 10,
+              },
+            },
+            required: ["headers", "rows"],
+          },
+        },
+        required: ["id", "heading", "paragraphs"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["kind", "projectType", "title", "sections"],
+  additionalProperties: false,
+};
+
+export function parseProposeDocumentToolInput(input: unknown): TopicDocument {
+  return topicDocumentSchema.parse(input);
+}
+
 export function parseTopicDocument(raw: string): TopicDocument {
   let parsed: unknown;
   try {

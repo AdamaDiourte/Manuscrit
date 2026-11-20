@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { NOTICE_VERSION } from "../../../../shared/research/notice";
+import { normalizeTopicAnswers } from "../../../../shared/research/topicQuestions";
+import { computeProfileCompleteness } from "../../../../shared/research/profileCompleteness";
 import type {
   GeneratedTopic,
   RegenReason,
@@ -10,6 +12,7 @@ import { detectSensitiveTerms } from "../../../../shared/privacy/sensitiveFilter
 import TopicNotice from "./TopicNotice";
 import TopicQuestionnaire from "./TopicQuestionnaire";
 import TopicReview from "./TopicReview";
+import TopicEnrich from "./TopicEnrich";
 import TopicResults, { type DocFile } from "./TopicResults";
 import { useConfirmDialog } from "./ConfirmDialog";
 import {
@@ -19,7 +22,7 @@ import {
   saveDraft,
 } from "./storage";
 
-type Phase = "notice" | "quiz" | "review" | "results";
+type Phase = "notice" | "quiz" | "review" | "enrich" | "results";
 
 type Props = {
   goPrivacy: () => void;
@@ -49,7 +52,7 @@ export default function TopicGenerator({
   );
   const [step, setStep] = useState(saved?.step || 1);
   const [answers, setAnswers] = useState<Record<string, unknown>>(() => {
-    const base = { ...(saved?.answers || {}) };
+    const base = normalizeTopicAnswers({ ...(saved?.answers || {}) });
     if (!base.writing_language) base.writing_language = "fr";
     return base;
   });
@@ -65,8 +68,17 @@ export default function TopicGenerator({
   const [ticket, setTicket] = useState("");
   const [regens, setRegens] = useState(0);
   const [model, setModel] = useState("");
-  const [simulate, setSimulate] = useState(true);
+  const [simulate, setSimulate] = useState(false);
   const [simulated, setSimulated] = useState(false);
+  const [personalizationLevel, setPersonalizationLevel] = useState<
+    "high" | "medium" | "low" | undefined
+  >(undefined);
+  const [reviewStatus, setReviewStatus] = useState<"ok" | "failed" | undefined>(
+    undefined,
+  );
+  const [axisStatus, setAxisStatus] = useState<
+    Partial<Record<TopicAxis, "pending" | "done" | "error">>
+  >({});
   const [sessionId, setSessionId] = useState("");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
 
@@ -124,10 +136,24 @@ export default function TopicGenerator({
     });
   }
 
-  async function generate() {
+  async function generate(fromEnrich = false) {
     setError("");
     if (!(await confirmSensitive())) return;
+
+    if (!fromEnrich && computeProfileCompleteness(answers).level === "low") {
+      setPhase("enrich");
+      return;
+    }
+
     setBusy(true);
+    setTopics([]);
+    setTicket("");
+    setAxisStatus({
+      mastery: "pending",
+      ambition: "pending",
+      discovery: "pending",
+    });
+    setPhase("results");
     try {
       const res = await fetch("/api/topics/generate", {
         method: "POST",
@@ -135,32 +161,80 @@ export default function TopicGenerator({
         body: JSON.stringify({
           answers,
           consents: buildConsents(),
-          simulate,
+          ...(simulate ? { simulate: true } : {}),
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Génération impossible.");
-      const nextTopics = data.topics as GeneratedTopic[];
+      const jobId = data.job_id as string;
+      if (!jobId) throw new Error("Identifiant de génération manquant.");
+
       const sid =
         sessionId ||
-        "arch-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+        "arch-" +
+          Date.now().toString(36) +
+          "-" +
+          Math.random().toString(36).slice(2, 8);
       setSessionId(sid);
-      setTopics(nextTopics);
-      setTicket(data.ticket);
-      setRegens(data.regenerationsRemaining ?? 0);
-      setModel(data.model || "");
-      setSimulated(Boolean(data.simulated || simulate));
       clearDraft();
-      setPhase("results");
+
+      let finalTopics: GeneratedTopic[] = [];
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const jr = await fetch(`/api/topics/jobs/${jobId}`);
+        const job = await jr.json();
+        if (!jr.ok) throw new Error(job.error || "Suivi de génération impossible.");
+
+        const nextStatus: Partial<
+          Record<TopicAxis, "pending" | "done" | "error">
+        > = {};
+        const collected: GeneratedTopic[] = [];
+        for (const axis of ["mastery", "ambition", "discovery"] as TopicAxis[]) {
+          const ax = job.axes?.[axis];
+          nextStatus[axis] = ax?.status || "pending";
+          if (ax?.status === "done" && ax.topic) {
+            collected.push(ax.topic as GeneratedTopic);
+          }
+        }
+        setAxisStatus(nextStatus);
+        setTopics(collected);
+
+        if (job.status === "error") {
+          throw new Error("Génération interrompue.");
+        }
+        if (job.status === "done" && job.ticket) {
+          finalTopics = collected;
+          setTicket(job.ticket);
+          setRegens(job.regenerationsRemaining ?? 0);
+          setModel(job.model || "");
+          setSimulated(Boolean(job.simulated));
+          setPersonalizationLevel(
+            job.personalization_level === "high" ||
+              job.personalization_level === "medium" ||
+              job.personalization_level === "low"
+              ? job.personalization_level
+              : undefined,
+          );
+          setReviewStatus(
+            job.review_status === "failed" || job.review_status === "ok"
+              ? job.review_status
+              : "ok",
+          );
+          break;
+        }
+      }
+
       await onTopicsGenerated?.({
         sessionId: sid,
-        topics: nextTopics,
+        topics: finalTopics,
         answers,
-        model: data.model || "",
-        simulated: Boolean(data.simulated || simulate),
+        model: model || "",
+        simulated: Boolean(simulated),
       });
-    } catch (e: any) {
-      setError(e.message || "Génération impossible.");
+    } catch (e: unknown) {
+      setError(
+        e instanceof Error ? e.message : "Génération impossible.",
+      );
     } finally {
       setBusy(false);
     }
@@ -179,7 +253,7 @@ export default function TopicGenerator({
           reason,
           answers,
           consents: buildConsents(),
-          simulate,
+          ...(simulate ? { simulate: true } : {}),
         }),
       });
       const data = await res.json();
@@ -189,18 +263,27 @@ export default function TopicGenerator({
       setTicket(data.ticket);
       setRegens(data.regenerationsRemaining ?? 0);
       setModel(data.model || "");
-      setSimulated(Boolean(data.simulated || simulate));
+      setSimulated(Boolean(data.simulated));
+      if (
+        data.personalization_level === "high" ||
+        data.personalization_level === "medium" ||
+        data.personalization_level === "low"
+      ) {
+        setPersonalizationLevel(data.personalization_level);
+      }
       if (sessionId) {
         await onTopicsGenerated?.({
           sessionId,
           topics: nextTopics,
           answers,
           model: data.model || "",
-          simulated: Boolean(data.simulated || simulate),
+          simulated: Boolean(data.simulated),
         });
       }
-    } catch (e: any) {
-      setError(e.message || "Régénération impossible.");
+    } catch (e: unknown) {
+      setError(
+        e instanceof Error ? e.message : "Régénération impossible.",
+      );
     } finally {
       setBusy(false);
     }
@@ -222,6 +305,7 @@ export default function TopicGenerator({
     setTicket("");
     setRegens(0);
     setSimulated(false);
+    setReviewStatus(undefined);
     setError("");
     setPhase("notice");
     setFlags({
@@ -238,6 +322,7 @@ export default function TopicGenerator({
     setTicket("");
     setRegens(0);
     setSimulated(false);
+    setReviewStatus(undefined);
     setAnswers({ writing_language: "fr" });
     setStep(1);
     setPhase("notice");
@@ -271,7 +356,7 @@ export default function TopicGenerator({
           setError("");
           setPhase("quiz");
         }}
-        onGenerate={generate}
+        onGenerate={() => void generate(false)}
         onClear={clearAll}
         busy={busy}
         error={error}
@@ -279,20 +364,41 @@ export default function TopicGenerator({
         onSimulate={setSimulate}
       />
     );
+  else if (phase === "enrich")
+    content = (
+      <TopicEnrich
+        key="enrich"
+        answers={answers}
+        onAnswers={setAnswers}
+        onContinue={() => void generate(true)}
+        onSkip={() => void generate(true)}
+        busy={busy}
+        error={error}
+      />
+    );
   else if (phase === "results")
     content = (
       <TopicResults
         key="results"
         topics={topics}
+        ticket={ticket}
         regenerationsRemaining={regens}
         model={model}
         simulated={simulated}
+        personalizationLevel={personalizationLevel}
+        reviewStatus={reviewStatus}
+        axisStatus={axisStatus}
         answers={answers}
         consents={buildConsents()}
         busy={busy}
         error={error}
+        onTopicsUpdate={setTopics}
         onRegenerate={regenerate}
         onRestart={restart}
+        onEditProfile={() => {
+          setError("");
+          setPhase("review");
+        }}
         onBusy={setBusy}
         onError={setError}
         onChooseTopic={

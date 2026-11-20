@@ -1,4 +1,4 @@
-import type { Question, QuestionOption } from "./topicTypes";
+import { SKIP_VALUE, type Question, type QuestionOption } from "./topicTypes";
 
 const W = {
   F: { M: 0, A: 0, D: 0, F: 3 },
@@ -318,36 +318,13 @@ export const topicQuestions: Question[] = [
     sentToLLM: true,
   },
   {
-    id: "favorite_courses_1",
+    id: "favorite_courses",
     block: 2,
-    label: "Cours ou enseignement marquant (1)",
+    label: "Cours ou enseignement marquant",
+    help: "Séparez chaque cours ou enseignement marquant par un point-virgule (;).",
     type: "text_short",
     required: false,
-    maxLength: 300,
-    allowSkip: skip,
-    weights: W.M,
-    sensitiveRisk: "low",
-    sentToLLM: true,
-  },
-  {
-    id: "favorite_courses_2",
-    block: 2,
-    label: "Cours ou enseignement marquant (2)",
-    type: "text_short",
-    required: false,
-    maxLength: 300,
-    allowSkip: skip,
-    weights: W.M,
-    sensitiveRisk: "low",
-    sentToLLM: true,
-  },
-  {
-    id: "favorite_courses_3",
-    block: 2,
-    label: "Cours ou enseignement marquant (3)",
-    type: "text_short",
-    required: false,
-    maxLength: 300,
+    maxLength: 900,
     allowSkip: skip,
     weights: W.M,
     sensitiveRisk: "low",
@@ -390,10 +367,10 @@ export const topicQuestions: Question[] = [
     id: "inspiring_concept",
     block: 2,
     label: "Auteur, concept ou théorie marquante (facultatif)",
-    help: "Citez une œuvre ou un concept, pas un proche.",
+    help: "Citez une œuvre, un concept ou un auteur de référence (pas un proche). S’il y en a plusieurs, séparez-les par un point-virgule (;).",
     type: "text_short",
     required: false,
-    maxLength: 300,
+    maxLength: 600,
     allowSkip: skip,
     weights: W.M,
     sensitiveRisk: "low",
@@ -409,6 +386,20 @@ export const topicQuestions: Question[] = [
     allowSkip: skip,
     weights: W.D,
     sensitiveRisk: "none",
+    sentToLLM: true,
+  },
+  {
+    id: "interest_objects",
+    block: 2,
+    label:
+      "Quels objets, publics, lieux, périodes ou phénomènes vous intéressent ?",
+    help: "Exemples : la lecture chez les jeunes adultes, les tiers-lieux, les politiques locales de l'emploi…",
+    type: "text_short",
+    required: false,
+    maxLength: 600,
+    allowSkip: skip,
+    weights: W.D,
+    sensitiveRisk: "low",
     sentToLLM: true,
   },
 
@@ -549,6 +540,19 @@ export const topicQuestions: Question[] = [
     sensitiveRisk: "low",
     sentToLLM: true,
   },
+  {
+    id: "field_access",
+    block: 3,
+    label: "Avez-vous accès à un terrain, des données ou des archives ?",
+    help: "Exemples : stage dans une médiathèque, base d'enquête publique, archives municipales. N'indiquez aucun nom de personne.",
+    type: "text_short",
+    required: false,
+    maxLength: 400,
+    allowSkip: skip,
+    weights: W.MF,
+    sensitiveRisk: "low",
+    sentToLLM: true,
+  },
 ];
 
 export const TOPIC_BLOCKS = [
@@ -561,3 +565,33 @@ export const TEXT_WARNING =
   "N’indiquez pas d’informations sensibles (santé, opinions politiques ou religieuses, origine, vie privée) ni de noms de personnes.";
 
 export const SKIP_LABEL = "Je ne sais pas / Je préfère ne pas répondre";
+
+/** Anciens champs (1)(2)(3) → un seul `favorite_courses` séparé par « ; ». */
+const LEGACY_FAVORITE_COURSE_IDS = [
+  "favorite_courses_1",
+  "favorite_courses_2",
+  "favorite_courses_3",
+] as const;
+
+/**
+ * Normalise les réponses du questionnaire (migration locale / brouillon).
+ * Fusionne favorite_courses_1..3 en favorite_courses si besoin.
+ */
+export function normalizeTopicAnswers(
+  answers: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...answers };
+  const current =
+    typeof out.favorite_courses === "string" ? out.favorite_courses.trim() : "";
+  if (!current || current === SKIP_VALUE) {
+    const parts = LEGACY_FAVORITE_COURSE_IDS.map((id) => out[id])
+      .filter(
+        (v): v is string =>
+          typeof v === "string" && Boolean(v.trim()) && v !== SKIP_VALUE,
+      )
+      .map((v) => v.trim());
+    if (parts.length) out.favorite_courses = parts.join("; ");
+  }
+  for (const id of LEGACY_FAVORITE_COURSE_IDS) delete out[id];
+  return out;
+}

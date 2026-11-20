@@ -72,6 +72,39 @@ export type TopicConsents = {
 
 export type TopicAxis = "mastery" | "ambition" | "discovery";
 
+export type LiteratureDensity = "high" | "normal" | "unknown";
+
+export type VerifiedReading = {
+  source: "openalex" | "hal";
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  url: string;
+  /** Truncated abstract for ranking / citation prompts (optional). */
+  abstract?: string;
+  relevance_score?: number;
+  relevance_reason?: string;
+};
+
+export type { FieldworkPlanItem, FieldworkUnit } from "./fieldworkCosts";
+import type { FieldworkPlanItem } from "./fieldworkCosts";
+
+export type TopicProfileLink = {
+  field: string;
+  profile_value: string;
+  use: string;
+};
+
+export type ProfileAnalysis = {
+  strengths: string[];
+  interests: string[];
+  wants_to_learn: string[];
+  constraints: string[];
+  missing: string[];
+};
+
 export type GeneratedTopic = {
   axis: TopicAxis;
   title: string;
@@ -90,9 +123,51 @@ export type GeneratedTopic = {
   keywords_fr: string[];
   keywords_en: string[];
   ethical_notes: string | null;
+  /** Objet empirique précis (qui/quoi, lieu, période). */
+  research_object?: string;
+  /** Éléments du profil réellement mobilisés. */
+  profile_links?: TopicProfileLink[];
+  /** Titre dans la langue de rédaction si ≠ français. */
+  title_writing_language?: string | null;
+  /** Ce que le sujet apporte par rapport aux connaissances établies. */
+  expected_contribution: string;
+  /** Plan de collecte structuré (unités × quantités). */
+  fieldwork_plan: FieldworkPlanItem[];
+  /**
+   * Comment tester chaque hypothèse (une entrée par hypothèse, index 0-based).
+   */
+  hypothesis_tests: HypothesisTest[];
+  /** Heures estimées calculées en code (jamais par le modèle). */
+  estimated_hours?: number;
+  /** Densité de la littérature (après lectures). */
+  literature_density?: LiteratureDensity;
+  /** Avertissements non bloquants affichés sur la carte. */
+  warnings?: TopicWarning[];
+  /** Lectures vérifiées (OpenAlex / HAL) — jamais générées par le modèle. */
+  readings?: VerifiedReading[];
 };
 
-export type TopicsOutput = { topics: GeneratedTopic[] };
+export type TopicWarningCode = "META_HYPOTHESIS" | "UNDER_SCALE";
+
+export type TopicWarning = {
+  code: TopicWarningCode;
+  message: string;
+};
+
+export type HypothesisTest = {
+  /** Index 0-based dans hypotheses. */
+  hypothesis_index: number;
+  /** Comparaison ou variable qui permet de tester l'hypothèse. */
+  comparison_or_variable: string;
+  /** Donnée précise (présente dans field_or_corpus / fieldwork_plan). */
+  data_source: string;
+};
+
+export type TopicsOutput = {
+  topics: GeneratedTopic[];
+  profile_analysis?: ProfileAnalysis;
+  personalization_level?: "high" | "medium" | "low";
+};
 
 export type RegenReason =
   | "too_far"

@@ -45,4 +45,12 @@ Style d’écriture (obligatoire) :
 
 Sortie :
 - JSON uniquement, selon le schéma demandé.
-- Toutes les sections de l’outline doivent être présentes.`;
+- Toutes les sections de l’outline doivent être présentes.
+
+Règles anti-hallucination (obligatoires) :
+- Tu ne peux citer QUE les lectures fournies, uniquement sous la forme [R1], [R2]… Aucune autre référence, aucun autre auteur, aucun titre d'ouvrage. Si une notion classique de la discipline est utile, nomme le concept sans l'attribuer à un auteur, ou écris "à documenter par une recherche bibliographique".
+- Ne cite une lecture [Rn] QUE si son titre ou son résumé fourni soutient clairement la phrase. Si ce n'est pas le cas, n'insère pas de citation : ne pas citer est préférable à une citation forcée.
+- N'invente aucun chiffre, aucune date, aucune loi, aucune institution.
+- Le planning respecte le budget de temps fourni : la somme des charges ne dépasse pas le total d'heures.
+- Les hypothèses reprennent celles du sujet choisi, éventuellement précisées, et portent sur l'objet, jamais sur la personne.
+- Appelle l'outil propose_document une seule fois avec le document complet.`;

@@ -9,7 +9,10 @@ import {
   normalizeProjectType,
   PROJECT_TYPE_LABELS,
 } from "../../../../shared/research/documentStructures";
-import type { TopicDocument } from "../../../../shared/research/topicTypes";
+import type {
+  TopicDocument,
+  VerifiedReading,
+} from "../../../../shared/research/topicTypes";
 import {
   DOC_CAUTION,
   DOC_MARGINS,
@@ -68,7 +71,50 @@ function sectionBlocks(
   return out;
 }
 
-export async function buildTopicDocx(doc: TopicDocument): Promise<{
+function formatReadingLine(r: VerifiedReading, withReason: boolean): string {
+  const authors =
+    r.authors.length > 0 ? r.authors.join(", ") : "Auteur inconnu";
+  const year = r.year ?? "s. d.";
+  const venue = r.venue ? ` ${r.venue}.` : "";
+  const doi = r.doi ? ` DOI: ${r.doi}.` : "";
+  const url = r.url ? ` URL: ${r.url}` : "";
+  const reason =
+    withReason && r.relevance_reason
+      ? ` — ${r.relevance_reason}`
+      : "";
+  return `${authors} (${year}). ${r.title}.${venue}${doi}${url}${reason}`;
+}
+
+function bibliographyBlocks(bibliography?: {
+  cited: VerifiedReading[];
+  other: VerifiedReading[];
+}): (Paragraph | Table)[] {
+  if (!bibliography) return [];
+  const { cited, other } = bibliography;
+  if (!cited.length && !other.length) return [];
+  const out: (Paragraph | Table)[] = [];
+  if (cited.length) {
+    out.push(docHeading("Références citées"));
+    for (const r of cited) {
+      out.push(docBody(formatReadingLine(r, false), 80));
+    }
+  }
+  if (other.length) {
+    out.push(docHeading("Autres pistes de lecture"));
+    for (const r of other) {
+      out.push(docBody(formatReadingLine(r, true), 80));
+    }
+  }
+  return out;
+}
+
+export async function buildTopicDocx(
+  doc: TopicDocument,
+  options?: {
+    readings?: VerifiedReading[];
+    bibliography?: { cited: VerifiedReading[]; other: VerifiedReading[] };
+  },
+): Promise<{
   filename: string;
   mimeType: string;
   buffer: Buffer;
@@ -109,6 +155,15 @@ export async function buildTopicDocx(doc: TopicDocument): Promise<{
 
   for (const section of doc.sections) {
     children.push(...sectionBlocks(section));
+  }
+
+  if (doc.kind === "research_project") {
+    const bibliography =
+      options?.bibliography ||
+      (options?.readings?.length
+        ? { cited: options.readings, other: [] as VerifiedReading[] }
+        : undefined);
+    children.push(...bibliographyBlocks(bibliography));
   }
 
   children.push(

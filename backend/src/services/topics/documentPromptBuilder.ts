@@ -7,15 +7,50 @@ import {
   type ProjectTypeId,
 } from "../../../../shared/research/documentStructures";
 import { writingStructureFor } from "../../../../shared/research/corpusOrganization";
-import type { GeneratedTopic } from "../../../../shared/research/topicTypes";
+import type {
+  GeneratedTopic,
+  ProfileAnalysis,
+  VerifiedReading,
+} from "../../../../shared/research/topicTypes";
 import {
   buildWorkPlanFromTopic,
   workPlanToScheduleTable,
 } from "../../../../shared/research/workPlan";
+import { computeTimeBudget } from "../../../../shared/research/timeBudget";
+import { getProjectLevelGuide } from "../../../../shared/research/projectLevelGuides";
 import { RESEARCH_DOCUMENT_SYSTEM } from "../../prompts/researchDocumentSystem";
 
 export function documentSystemPrompt(): string {
   return RESEARCH_DOCUMENT_SYSTEM;
+}
+
+function truncate(text: string, max: number): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1).trimEnd() + "…";
+}
+
+/** Only score≥2 readings; numbered [R1]… with abstract + relevance_reason. */
+function formatReadings(readings: VerifiedReading[]): string {
+  const retained = readings.filter(
+    (r) => (r.relevance_score ?? 2) >= 2,
+  );
+  if (!retained.length)
+    return "(Aucune lecture vérifiée fournie — n'invente aucune référence.)";
+  return retained
+    .map((r, i) => {
+      const authors =
+        r.authors.length > 0 ? r.authors.join(", ") : "Auteur inconnu";
+      const year = r.year ?? "s. d.";
+      const venue = r.venue ? ` ${r.venue}.` : "";
+      const reason = r.relevance_reason
+        ? ` Pertinence : ${truncate(r.relevance_reason, 120)}.`
+        : "";
+      const abstractHint = r.abstract ? truncate(r.abstract, 400) : "";
+      const abstractLine = abstractHint ? ` Résumé : ${abstractHint}` : "";
+      return `[R${i + 1}] ${authors} (${year}). ${r.title}.${venue}${reason}${abstractLine}`;
+    })
+    .join("\n");
 }
 
 export function buildDocumentUserPrompt(input: {
@@ -25,9 +60,16 @@ export function buildDocumentUserPrompt(input: {
   fields: Record<string, unknown>;
   kind: DocumentKind;
   projectType: ProjectTypeId;
+  answers: Record<string, unknown>;
+  profile_analysis?: ProfileAnalysis;
 }): string {
   const kindLabel = documentKindLabel(input.kind, input.projectType);
   const mainLabel = mainDocumentLabel(input.projectType);
+  const guide = getProjectLevelGuide(input.projectType);
+  const budget = computeTimeBudget(input.answers);
+  const readings = (input.topic.readings || []).filter(
+    (r) => (r.relevance_score ?? 2) >= 2,
+  );
 
   const workPlan =
     input.kind === "work_plan"
@@ -42,55 +84,6 @@ export function buildDocumentUserPrompt(input: {
       : null;
   const scheduleTable = workPlan ? workPlanToScheduleTable(workPlan) : null;
 
-  const schemaHint =
-    input.kind === "work_plan"
-      ? {
-          kind: "work_plan",
-          projectType: input.projectType,
-          title: "string",
-          subtitle: "string | optional",
-          sections: [
-            {
-              id: "identity | map | schedule | priorities | checklist",
-              heading: "string",
-              paragraphs: ["1 paragraphe court max (sauf identity : 1 seul)"],
-              bullets: ["branches courtes pour map / priorities / checklist"],
-              table: {
-                headers: [
-                  "Période",
-                  "Objectif",
-                  "Actions",
-                  "Livrable",
-                  "Charge",
-                ],
-                rows: [
-                  [
-                    "ex. Semaines 1-2",
-                    "Cadrer",
-                    "Action 1 ; action 2",
-                    "Note 1 page",
-                    "8 h",
-                  ],
-                ],
-              },
-            },
-          ],
-        }
-      : {
-          kind: input.kind,
-          projectType: input.projectType,
-          title: "string",
-          subtitle: "string | optional",
-          sections: [
-            {
-              id: "section_id from outline",
-              heading: "string",
-              paragraphs: ["string", "string"],
-              bullets: ["optional"],
-            },
-          ],
-        };
-
   const workPlanExtra =
     input.kind === "work_plan"
       ? [
@@ -103,9 +96,11 @@ export function buildDocumentUserPrompt(input: {
             expected_length:
               input.fields.expected_length ?? input.axes?.F?.expected_length,
             project_type: input.projectType,
+            budget,
           }),
           `Livrable à organiser : ${mainLabel} (${PROJECT_TYPE_LABELS[input.projectType]}).`,
           "Le plan doit proposer un planning d’organisation concret : découper le délai de rendu en périodes, et dimensionner la colonne Charge selon le temps à consacrer au sujet par semaine (sans dépasser ce rythme).",
+          `La somme des charges du tableau ne doit pas dépasser ${budget.totalHours} h.`,
           "Obligatoire : section schedule avec champ table rempli (4 à 7 lignes) — Période | Objectif | Actions | Livrable | Charge.",
           scheduleTable
             ? "Tableau de référence indicatif pour la section schedule (reprenez ces lignes, vous pouvez reformuler légèrement Actions ; conservez Période, Objectif, Livrable et Charge) :"
@@ -132,15 +127,29 @@ export function buildDocumentUserPrompt(input: {
     `Type de document : ${kindLabel}.`,
     `Type de projet : ${PROJECT_TYPE_LABELS[input.projectType]}.`,
     input.outline.guidance,
+    "## Guide de niveau",
+    JSON.stringify(guide),
+    "## Budget de temps",
+    `${budget.label} (total ${budget.totalHours} h)`,
+    "## Objet de recherche",
+    input.topic.research_object || input.topic.title,
+    "## Analyse de profil",
+    input.profile_analysis
+      ? JSON.stringify(input.profile_analysis)
+      : "(non disponible)",
+    "## Lectures vérifiées (seules citations autorisées via [Rn])",
+    formatReadings(readings),
     "Structure obligatoire (conserve tous les id, dans cet ordre) :",
     JSON.stringify(input.outline.sections),
     "Sujet retenu :",
-    JSON.stringify(input.topic),
+    JSON.stringify({
+      ...input.topic,
+      readings: undefined,
+    }),
     "Profil pseudonymisé :",
     JSON.stringify({ axes: input.axes, fields: input.fields }),
     ...workPlanExtra,
-    "Schéma JSON de sortie :",
-    JSON.stringify(schemaHint),
-    "Rappel : style naturel, pas de fausses références, pas de tirets dans les paragraphes.",
+    "## Consigne",
+    "Appelle l'outil propose_document.",
   ].join("\n\n");
 }

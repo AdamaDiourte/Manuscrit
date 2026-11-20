@@ -11,6 +11,8 @@ import {
   filterInterviewerQuotes,
   isInterviewMaterial,
 } from "../../../../shared/research/interviewMarkers";
+import { chatCompletion, isLlmConfigured } from "../llm/client";
+import { isClaudeProvider, syncAiFingerprintParts } from "../llm/claude";
 
 /** Include this version in the per-owner cache key whenever the prompt or validation changes. */
 export const ENGINE_VERSION = "research-2026-11-corpus-pipeline-v9";
@@ -384,7 +386,7 @@ export async function analyze(
   input: ResearchInput,
   env: Record<string, string>,
 ): Promise<ResearchResult> {
-  if (!env.AI_BASE_URL || !env.AI_MODEL || !env.AI_API_KEY)
+  if (!isLlmConfigured(env))
     throw new Error("Le service d’analyse IA doit être configuré.");
   if (
     !(input.mode in instructions) ||
@@ -406,11 +408,11 @@ export async function analyze(
   const publicQuery = input.publicQuery?.trim() || "";
   if (publicQuery.length > 200)
     throw new Error("Limitez les mots-clés publics à 200 caractères.");
-  const url = new URL(
-    env.AI_BASE_URL.replace(/\/+$/, "") + "/chat/completions",
-  );
-  if (url.protocol !== "https:")
-    throw new Error("Le service IA requiert une connexion HTTPS.");
+  if (!isClaudeProvider()) {
+    const base = String(env.AI_BASE_URL || "").trim();
+    if (!base.startsWith("https://") && process.env.NODE_ENV !== "development")
+      throw new Error("Le service IA requiert une connexion HTTPS.");
+  }
   let references: CatalogueEntry[] = [];
   let catalogueNote = "";
   if (publicQuery) {
@@ -424,19 +426,10 @@ export async function analyze(
         "La recherche de références en ligne est indisponible pour le moment. Relancez-la plus tard si besoin.";
     }
   }
-  const response = await fetch(url, {
-    method: "POST",
-    redirect: "error",
-    signal: AbortSignal.timeout(90000),
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + env.AI_API_KEY,
-    },
-    body: JSON.stringify({
-      model: env.AI_MODEL,
-      temperature: 0,
-      max_tokens: 4500,
-      messages: [
+  let completion;
+  try {
+    completion = await chatCompletion(
+      [
         { role: "system", content: common + "\n" + instructions[input.mode] },
         {
           role: "user",
@@ -453,24 +446,32 @@ export async function analyze(
           }),
         },
       ],
-    }),
-  });
-  if (!response.ok)
-    throw new Error(
-      response.status === 429
-        ? "Service IA saturé. Réessayez ultérieurement."
-        : "Le fournisseur IA n’a pas pu réaliser l’analyse.",
+      env,
+      { temperature: 0, maxTokens: 4500, timeoutMs: 90000 },
     );
-  const completion = (await response.json()) as {
-    choices?: { finish_reason?: string; message?: { content?: string } }[];
-  };
-  const choice = completion.choices?.[0];
-  if (
-    !choice?.message?.content ||
-    (choice.finish_reason && choice.finish_reason !== "stop")
-  )
-    throw invalid();
-  const result = readSections(choice.message.content, input, references);
+  } catch (err) {
+    const status =
+      err && typeof err === "object" && "status" in err
+        ? Number((err as { status?: number }).status)
+        : undefined;
+    if (status === 429)
+      throw Object.assign(
+        new Error("Service IA saturé. Réessayez ultérieurement."),
+        { status: 429 },
+      );
+    if (status === 503) throw err;
+    throw Object.assign(
+      new Error(
+        err instanceof Error && err.message
+          ? err.message
+          : "Le fournisseur IA n’a pas pu réaliser l’analyse.",
+      ),
+      { status: 502 },
+    );
+  }
+  if (!completion.content) throw invalid();
+  const result = readSections(completion.content, input, references);
   if (catalogueNote) result.gaps.push(catalogueNote);
-  return { ...result, model: env.AI_MODEL };
+  const [, model] = syncAiFingerprintParts(env);
+  return { ...result, model: completion.model || model || env.AI_MODEL };
 }

@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { topicQuestions } from "../../../../shared/research/topicQuestions";
+import {
+  normalizeTopicAnswers,
+  topicQuestions,
+} from "../../../../shared/research/topicQuestions";
 import {
   isQuestionVisible,
   SKIP_VALUE,
@@ -39,7 +42,7 @@ export function validateAnswersPayload(
 ): Record<string, unknown> {
   if (!answers || typeof answers !== "object" || Array.isArray(answers))
     throw Object.assign(new Error("Réponses invalides."), { status: 400 });
-  const raw = answers as Record<string, unknown>;
+  const raw = normalizeTopicAnswers(answers as Record<string, unknown>);
   const known = new Set(topicQuestions.map((q) => q.id));
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) {

@@ -145,6 +145,7 @@ export type AssignBatch = z.infer<typeof assignBatchSchema>;
 export type PipelineUsage = {
   inputTokens: number;
   outputTokens: number;
+  thinkingTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
 };
@@ -153,6 +154,7 @@ export function emptyUsage(): PipelineUsage {
   return {
     inputTokens: 0,
     outputTokens: 0,
+    thinkingTokens: 0,
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
   };
@@ -163,6 +165,7 @@ export function addUsage(
   b: {
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     cacheCreationInputTokens?: number;
     cacheReadInputTokens?: number;
   },
@@ -170,6 +173,7 @@ export function addUsage(
   return {
     inputTokens: a.inputTokens + (b.inputTokens || 0),
     outputTokens: a.outputTokens + (b.outputTokens || 0),
+    thinkingTokens: a.thinkingTokens + (b.thinkingTokens || 0),
     cacheCreationInputTokens:
       a.cacheCreationInputTokens + (b.cacheCreationInputTokens || 0),
     cacheReadInputTokens:

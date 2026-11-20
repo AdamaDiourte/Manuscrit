@@ -125,12 +125,12 @@ POST /api/research
 
 | Nom | Rôle | Défaut |
 |-----|------|--------|
-| `AI_PROVIDER` | `anthropic` \| `bedrock` \| `vertex` \| `openai-compatible` (ou absent) | absent → comportement topics + sync OpenAI-compatible |
+| `AI_PROVIDER` | `anthropic` \| `bedrock` \| `vertex` \| `openai-compatible` (ou absent) | absent → OpenAI-compatible ; `anthropic`/`bedrock`/`vertex` → Claude pour sync + pipeline |
 | `RESEARCH_PIPELINE` | Active les jobs async si corpus > 120 000 car. (`1`/`true`/`yes`/`on`) | désactivé → **413** comme avant |
-| `AI_BASE_URL` | Endpoint Chat Completions (sujets + sync corpus) | — (requis pour sync IA) |
+| `AI_BASE_URL` | Endpoint Chat Completions (mode openai-compatible uniquement) | — (non requis si `AI_PROVIDER=anthropic\|bedrock\|vertex`) |
 | `AI_MODEL` | Modèle OpenAI-compatible | — |
 | `AI_API_KEY` | Clé Bearer OpenAI-compatible | — |
-| `ANTHROPIC_API_KEY` | Clé API Anthropic direct | — (si `AI_PROVIDER=anthropic`) |
+| `ANTHROPIC_API_KEY` | Clé API Anthropic (sync + pipeline si `AI_PROVIDER=anthropic`) | — |
 | `AI_MODEL_FAST` | Modèle Claude extraction / vision | `claude-haiku-5-5` |
 | `AI_MODEL_SMART` | Modèle synthèse / plan / assign | `claude-sonnet-5-5` |
 | `AI_CONCURRENCY` | Parallélisme extract temps réel | `4` |
@@ -153,16 +153,17 @@ Ne jamais committer de secrets (voir `.env.example`).
 
 ## 4. Activation pas à pas
 
-1. Copier `.env.example` → `.env` (racine / backend selon votre déploiement).
-2. **Chemin sync inchangé (optionnel)** : renseigner `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY` pour sujets + corpus ≤ 120 k.
-3. **Claude pipeline** :
+1. Copier `.env.example` → `.env` à la **racine** du monorepo (chargé par `backend/src/loadEnv.ts` et `scripts/develop.mjs`).
+2. **Claude (recommandé)** :
    - `AI_PROVIDER=anthropic` **ou** `bedrock` **ou** `vertex`.
-   - Anthropic : `ANTHROPIC_API_KEY=sk-…`
+   - Anthropic : `ANTHROPIC_API_KEY=sk-…` (suffit pour sujets, analyse sync et pipeline).
    - Bedrock : `AWS_REGION=eu-…` + credentials AWS.
    - Vertex : `CLOUD_ML_REGION=europe-…` + `ANTHROPIC_VERTEX_PROJECT_ID=…` + ADC / compte de service.
+   - Ne pas mettre `AI_BASE_URL=https://api.anthropic.com/v1` : ce n’est pas une API Chat Completions OpenAI.
+3. **Mode openai-compatible (optionnel)** : si `AI_PROVIDER` absent ou `openai-compatible`, renseigner `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`.
 4. Modèles (optionnel) : `AI_MODEL_FAST`, `AI_MODEL_SMART`.
 5. **Activer l’async** : `RESEARCH_PIPELINE=1`.
-6. Redémarrer le backend (`npm run dev` / compose). Sans `RESEARCH_PIPELINE`, un corpus > 120 k reste en **413**.
+6. Redémarrer (`npm run dev`). Sans `RESEARCH_PIPELINE`, un corpus > 120 k reste en **413**.
 7. Côté UI : estimation → confirmer → si job, barre de progression (poll 3 s) ; mode économique = Message Batches (**Anthropic seulement**).
 
 ---
