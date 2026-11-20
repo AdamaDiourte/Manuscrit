@@ -2,5 +2,6 @@
 **/dist
 **/.env
 **/backend/.data
+.data/
 .git
 tmp/
