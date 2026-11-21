@@ -108,7 +108,7 @@ export function collectTextReferences(data: {
   return refs;
 }
 
-/** Identifiants files/{sha} encore référencés (matériaux + versions). */
+/** Identifiants files/{sha} encore référencés (matériaux, versions, archive sujets). */
 export function collectReferencedFileIds(data: {
   projects?: any[];
 }): Set<string> {
@@ -120,6 +120,17 @@ export function collectReferencedFileIds(data: {
     for (const version of project?.versions || []) {
       for (const side of ["before", "after"] as const) {
         collectFileIdsFromSnap(version?.[side], ids);
+      }
+    }
+    // Word archivés après choix d’un sujet (projet + plan de travail).
+    const archive = project?.copilot?.topicArchive;
+    if (Array.isArray(archive)) {
+      for (const entry of archive) {
+        const docs = entry?.documents;
+        if (!Array.isArray(docs)) continue;
+        for (const doc of docs) {
+          if (isFileContentId(doc?.fileId)) ids.add(String(doc.fileId).toLowerCase());
+        }
       }
     }
   }

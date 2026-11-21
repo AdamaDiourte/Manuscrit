@@ -6,7 +6,6 @@ import {
   type DocumentKind,
   type ProjectTypeId,
 } from "../../../../shared/research/documentStructures";
-import { writingStructureFor } from "../../../../shared/research/corpusOrganization";
 import type {
   GeneratedTopic,
   TopicDocument,
@@ -15,6 +14,7 @@ import type {
 import {
   buildWorkPlanFromTopic,
   joinSentences,
+  RESEARCH_WORK_PLAN_SECTIONS,
   workPlanToScheduleTable,
   type WorkPlan,
 } from "../../../../shared/research/workPlan";
@@ -85,6 +85,17 @@ export function simulateTopics(
         ],
       },
       rationale: `Ce sujet de maîtrise s’appuie sur ${discipline}, le type « ${typeLabel} » et les contraintes de délai/temps du profil. Il reste volontairement tenable.`,
+      pitch: `Vous maîtrisez déjà des bases en ${discipline} : ce sujet vous permet de les mobiliser tout de suite, sur un objet borné et tenable dans votre délai.`,
+      stakes: [
+        "Clarifier un objet empirique déjà balisé dans la discipline.",
+        "Produire un résultat utile pour le type de projet déclaré.",
+        "Consolider une méthode déjà connue sans surcharge.",
+      ],
+      leads: [
+        "Affiner la population ou la période si le corpus déborde.",
+        "Prévoir une variante documentaire si l'accès terrain se réduit.",
+        "Explorer les notions de cadrage déjà croisées en cours.",
+      ],
       keywords_fr: [discipline, theme, "méthode", "faisabilité", "cadrage"],
       keywords_en: ["research design", "feasibility", discipline, "methods"],
       ethical_notes: null,
@@ -153,6 +164,17 @@ export function simulateTopics(
         ],
       },
       rationale: `Axe ambition : le sujet pousse une progression utile pour le ${typeLabel}, sans ignorer le temps disponible déclaré.`,
+      pitch: `Ce sujet vous fait progresser d'un cran : vous y ajoutez une méthode encore peu maîtrisée, sans quitter un objet que vous connaissez déjà.`,
+      stakes: [
+        "Tester l'apport d'une méthode nouvelle sur un objet familier.",
+        "Constituer un protocole réutilisable pour la suite.",
+        "Montrer une montée en compétence mesurable dans le délai.",
+      ],
+      leads: [
+        "Limiter le pilote à un sous-corpus si l'apprentissage prend du temps.",
+        "Documenter le protocole dès les premiers essais.",
+        "Comparer avant/après sur quelques unités seulement.",
+      ],
       keywords_fr: [
         "compétence",
         "protocole",
@@ -227,6 +249,17 @@ export function simulateTopics(
         ],
       },
       rationale: `Axe découverte : ouverture contrôlée à partir de ${discipline}, compatible avec le type « ${typeLabel} » et le cadre ${base}.`,
+      pitch: `Voici une ouverture contrôlée : un angle voisin pour relire ${theme}, sans sortir des contraintes de votre ${typeLabel.toLowerCase()}.`,
+      stakes: [
+        "Apporter un éclairage voisin sur un objet déjà identifiable.",
+        "Élargir le vocabulaire analytique sans disperser le projet.",
+        "Garder un cas unique pour rester tenable.",
+      ],
+      leads: [
+        "Nommer explicitement la discipline voisine retenue.",
+        "Réduire l'objet à un cas si l'ouverture devient trop large.",
+        "Comparer deux grilles de lecture sur le même corpus.",
+      ],
       keywords_fr: [
         "interdisciplinarité",
         theme,
@@ -629,13 +662,12 @@ export function simulateDocument(input: {
 }): TopicDocument {
   const projectType = normalizeProjectType(input.answers.project_type);
   const outline = getDocumentOutline(projectType, input.kind);
-  const structure = writingStructureFor(projectType);
   const workPlan =
     input.kind === "work_plan"
       ? buildWorkPlanFromTopic({
           answers: input.answers,
           topic: input.topic,
-          sections: structure,
+          sections: RESEARCH_WORK_PLAN_SECTIONS,
         })
       : null;
   const sections = outline.sections.map((section) => {

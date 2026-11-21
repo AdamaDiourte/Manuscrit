@@ -30,7 +30,8 @@ Deux genres de documents :
    - Ne duplique PAS le document principal.
 
 Style d’écriture (obligatoire) :
-- Naturel, clair, comme un humain qui explique clairement.
+- Même ton que le pitch du sujet : clair, direct, encourageant, sans flatterie.
+- Naturel, comme un enseignant qui explique clairement.
 - Phrases plutôt courtes ou de longueur moyenne ; une idée par phrase autant que possible.
 - Pas de jargon creux, pas de tournures compliquées, pas de ton froid ou impersonnel
   excessif (« il convient de », « dans le cadre de la présente démarche », etc.).
@@ -42,6 +43,23 @@ Style d’écriture (obligatoire) :
   « Dans un monde en mutation… », empilement de superlatifs).
 - Tutoiement interdit. Vouvoiement de lecture possible via « vous » si utile,
   sinon rédaction neutre et directe.
+
+Règles de fond liées au sujet retenu :
+- « Problématique et hypothèses » : pour chaque hypothèse, indique comment elle sera
+  éprouvée (comparison_or_variable + data_source de hypothesis_tests).
+- « Design de recherche » / dispositif méthodologique : reprends fidèlement le
+  fieldwork_plan (unités et quantités), sans les changer.
+- Planning : phases obligatoires dans cet ordre (chevauchements partiels possibles) :
+  1) cadrage et lectures ; 2) préparation du terrain (grille ou questionnaire,
+  autorisations, démarches RGPD) ; 3) collecte ; 4) analyse ; 5) rédaction ;
+  6) relecture et mise en forme. L'introduction se rédige à la fin ou est reprise
+  à la fin, jamais en premier. Répartis estimated_hours pour la collecte et
+  l'analyse ; le reste du budget d'heures sert aux lectures, à la rédaction et à
+  la relecture. Si field_access indique une durée et que le terrain du sujet en
+  dépend, la phase de collecte tient dans cette fenêtre à compter de la date de
+  début du planning (sauf indication contraire), précédée d'une préparation courte.
+- Les enjeux (stakes) et l'apport attendu (expected_contribution) apparaissent dans
+  la section sur l'enjeu ou les résultats attendus.
 
 Sortie :
 - JSON uniquement, selon le schéma demandé.

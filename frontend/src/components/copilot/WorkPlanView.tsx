@@ -1,6 +1,10 @@
 import { Fragment } from "react";
 import type { WorkPlan } from "../../../../shared/research/workPlan";
 import {
+  planLoadSummarySentence,
+  weeklyLoadByWeek,
+} from "../../../../shared/research/workPlan";
+import {
   buildGanttColumns,
   buildGanttRows,
   formatHoursFr,
@@ -17,13 +21,15 @@ type Props = {
   className?: string;
 };
 
-const PILOTAGE_COLS = [17, 16, 23, 17, 19, 8];
+const PILOTAGE_COLS = [15, 14, 20, 14, 15, 10, 12];
 /** Largeurs Gantt — source unique (colonnes + repère « aujourd’hui »). */
 const GANTT_PHASE_PCT = 22;
 const GANTT_PROGRESS_PCT = 10;
 
 export default function WorkPlanView({ plan, className = "" }: Props) {
   const { meta, phases, rhythm, warnings } = plan;
+  const weeklyLoad = weeklyLoadByWeek(plan);
+  const loadSentence = planLoadSummarySentence(plan);
   const { columns } = buildGanttColumns(plan);
   const rows = buildGanttRows(plan, columns);
   const todayPct = todayMarkerPct(plan);
@@ -213,42 +219,57 @@ export default function WorkPlanView({ plan, className = "" }: Props) {
                 <th scope="col">Livrable</th>
                 <th scope="col">Point d’encadrement</th>
                 <th scope="col">Charge</th>
+                <th scope="col">Heures par semaine</th>
               </tr>
             </thead>
             <tbody>
-              {phases.map((phase, i) => (
-                <Fragment key={phase.index}>
-                  <tr className={i % 2 ? "is-alt" : undefined}>
-                    <td>
-                      {phase.index + 1}. {shortPhaseTitle(phase.title, 40)}
-                    </td>
-                    <td>
-                      {periodLabel(phase)}
-                      <small>
-                        {formatWeekSpan(phase.weekStart, phase.weekEnd)}
-                      </small>
-                    </td>
-                    <td>{phase.objective}</td>
-                    <td>{phase.deliverable}</td>
-                    <td>{phase.checkpoint}</td>
-                    <td>{formatHoursFr(phase.hours)}</td>
-                  </tr>
-                  {(phase.subsections || []).map((sub, j) => (
-                    <tr
-                      key={`${phase.index}-sub-${j}`}
-                      className="wp-pilotage-sub"
-                    >
-                      <td colSpan={6}>
-                        {phase.index + 1}.{j + 1}{" "}
-                        {shortPhaseTitle(sub.title, 60)}
+              {phases.map((phase, i) => {
+                let sum = 0;
+                let n = 0;
+                for (let w = phase.weekStart; w <= phase.weekEnd; w++) {
+                  sum += weeklyLoad[w] || 0;
+                  n += 1;
+                }
+                const weekly =
+                  n > 0 ? Math.round((sum / n) * 10) / 10 : 0;
+                return (
+                  <Fragment key={phase.index}>
+                    <tr className={i % 2 ? "is-alt" : undefined}>
+                      <td>
+                        {phase.index + 1}. {shortPhaseTitle(phase.title, 40)}
                       </td>
+                      <td>
+                        {periodLabel(phase)}
+                        <small>
+                          {formatWeekSpan(phase.weekStart, phase.weekEnd)}
+                        </small>
+                      </td>
+                      <td>{phase.objective}</td>
+                      <td>{phase.deliverable}</td>
+                      <td>{phase.checkpoint}</td>
+                      <td>{formatHoursFr(phase.hours)}</td>
+                      <td>{formatHoursFr(weekly)}</td>
                     </tr>
-                  ))}
-                </Fragment>
-              ))}
+                    {(phase.subsections || []).map((sub, j) => (
+                      <tr
+                        key={`${phase.index}-sub-${j}`}
+                        className="wp-pilotage-sub"
+                      >
+                        <td colSpan={7}>
+                          {phase.index + 1}.{j + 1}{" "}
+                          {shortPhaseTitle(sub.title, 60)}
+                        </td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
+        <p className="wp-load-summary" role="status">
+          {loadSentence}
+        </p>
       </div>
 
       {rhythm.length > 0 && (

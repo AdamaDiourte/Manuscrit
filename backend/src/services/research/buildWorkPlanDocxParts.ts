@@ -16,7 +16,12 @@ import {
   VerticalAlignTable,
   WidthType,
 } from "docx";
+import { buildDocxFilename } from "../../../../shared/research/docxFilename";
 import type { WorkPlan } from "../../../../shared/research/workPlan";
+import {
+  planLoadSummarySentence,
+  weeklyLoadByWeek,
+} from "../../../../shared/research/workPlan";
 import {
   buildGanttColumns,
   buildGanttRows,
@@ -38,6 +43,7 @@ import {
   DOC_SIZES,
   docBullet,
   docHeading,
+  docItalic,
   landscapePageSizeAttrs,
   monthSepBorder,
   noBorder,
@@ -447,8 +453,9 @@ function legendParagraph() {
 }
 
 function pilotageTable(plan: WorkPlan) {
-  const percents = [17, 16, 23, 17, 19, 8];
+  const percents = [15, 14, 20, 14, 15, 10, 12];
   const widths = widthsFromPercents(percents, TABLE_W);
+  const weeklyLoad = weeklyLoadByWeek(plan);
   const headers = [
     "Phase",
     "Période",
@@ -456,6 +463,7 @@ function pilotageTable(plan: WorkPlan) {
     "Livrable",
     "Point d’encadrement",
     "Charge",
+    "Heures par semaine",
   ];
 
   const headerRow = new TableRow({
@@ -530,6 +538,14 @@ function pilotageTable(plan: WorkPlan) {
         width,
       );
 
+    let sum = 0;
+    let n = 0;
+    for (let w = p.weekStart; w <= p.weekEnd; w++) {
+      sum += weeklyLoad[w] || 0;
+      n += 1;
+    }
+    const weekly = n > 0 ? Math.round((sum / n) * 10) / 10 : 0;
+
     bodyRows.push(
       new TableRow({
         children: [
@@ -561,6 +577,7 @@ function pilotageTable(plan: WorkPlan) {
           textCell(p.deliverable, widths[3]),
           textCell(p.checkpoint, widths[4]),
           textCell(formatHoursFr(p.hours), widths[5]),
+          textCell(formatHoursFr(weekly), widths[6]),
         ],
       }),
     );
@@ -586,7 +603,7 @@ function pilotageTable(plan: WorkPlan) {
                 }),
               ],
               TABLE_W,
-              { span: 6 },
+              { span: 7 },
             ),
           ],
         }),
@@ -639,6 +656,7 @@ export function buildWorkPlanPilotageChildren(
   const children: (Paragraph | Table)[] = [
     docHeading("Tableau de pilotage", 40),
     pilotageTable(plan),
+    docItalic(planLoadSummarySentence(plan), 80),
   ];
   if (plan.rhythm.length) {
     children.push(docHeading("Rythme conseillé", 120));
@@ -693,7 +711,10 @@ export async function buildWorkPlanDocument(input: {
   title?: string;
   lead?: string;
   generatedAt?: string;
+  /** @deprecated Prefer filenameKind — conservé pour feuille-de-route corpus. */
   filenameBase?: string;
+  filenameKind?: "work_plan" | "plan" | "schedule" | "research_project";
+  projectType?: string;
 }): Promise<{ filename: string; mimeType: string; buffer: Buffer }> {
   const document = new Document({
     sections: [
@@ -709,18 +730,20 @@ export async function buildWorkPlanDocument(input: {
   });
 
   const buffer = Buffer.from(await Packer.toBuffer(document));
-  const safe = `${input.filenameBase || input.title || "feuille-de-route"}-${
-    input.projectTitle || "manuscrit"
-  }`
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 70);
+  const titleForName =
+    input.projectTitle || input.title || "manuscrit";
+  const filename = buildDocxFilename(
+    input.filenameKind || "work_plan",
+    titleForName,
+    input.projectType,
+    new Date(),
+    input.filenameBase
+      ? { prefixOverride: input.filenameBase }
+      : undefined,
+  );
 
   return {
-    filename: `${safe || "feuille-de-route"}.docx`,
+    filename,
     mimeType:
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     buffer,

@@ -577,7 +577,8 @@ export function draftFieldsFromTopic(
     aims: [
       topic.research_question,
       ...(topic.hypotheses || []).map((h) => "Hypothèse : " + h),
-      topic.rationale,
+      topic.pitch || topic.rationale,
+      ...(topic.stakes || []).map((s) => "Enjeu : " + s),
     ].join("\n\n"),
     methods: [
       "Terrain / corpus : " + topic.field_or_corpus,

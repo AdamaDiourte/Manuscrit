@@ -177,3 +177,128 @@ export async function planTopicAngles(params: {
     latency_ms: result.latencyMs,
   };
 }
+
+const oneAngleLlmSchema = z.object({
+  axis: z.string(),
+  research_object: z.string(),
+  material: z.string(),
+  angle: z.string(),
+});
+
+const oneAngleInputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    axis: {
+      type: "string",
+      enum: ["mastery", "ambition", "discovery"],
+    },
+    research_object: { type: "string", minLength: 8, maxLength: 250 },
+    material: { type: "string", minLength: 3, maxLength: 120 },
+    angle: { type: "string", minLength: 8, maxLength: 150 },
+  },
+  required: ["axis", "research_object", "material", "angle"],
+  additionalProperties: false,
+};
+
+/**
+ * Nouvelle répartition d'angle pour un seul axe (régénération),
+ * en excluant les objets des autres axes et les titres rejetés.
+ */
+export async function planOneAxisAngle(params: {
+  profile: PseudonymizedProfile;
+  answers: Record<string, unknown>;
+  axis: TopicAxis;
+  reservedObjects: Array<{ axis: TopicAxis; research_object: string }>;
+  rejectedTitles?: string[];
+}): Promise<{
+  angle: AnglePlanItem;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_thinking: number;
+  latency_ms: number;
+}> {
+  const guide = getProjectLevelGuide(
+    typeof params.answers.project_type === "string"
+      ? params.answers.project_type
+      : undefined,
+  );
+  const budget = computeTimeBudget(params.answers);
+  const { modelFast } = getClaudeSettings();
+
+  const reserved = params.reservedObjects
+    .map((r) => `- ${r.axis} : « ${r.research_object} »`)
+    .join("\n");
+  const rejected =
+    (params.rejectedTitles || []).length > 0
+      ? params.rejectedTitles!.map((t) => `- ${t}`).join("\n")
+      : "(aucun)";
+
+  const system = [
+    "Tu es un directeur de recherche. Tu planifies un nouvel angle pour un seul axe.",
+    "Tu n'écris pas le sujet complet : seulement research_object, material et angle.",
+    "L'objet doit différer des objets réservés (population, phénomène ou matériau).",
+    "Ne reprends pas un titre déjà rejeté.",
+    "research_object ≤ 250 ; angle ≤ 150 ; material = type de matériau principal.",
+    `L'axe doit être exactement ${params.axis}.`,
+    "Appelle plan_one_axis_angle une seule fois.",
+  ].join(" ");
+
+  const user = [
+    "## Profil",
+    Object.values(params.profile.fields).join("\n") || "(vide)",
+    "## Manques",
+    params.profile.missing_fields.join(", ") || "(aucun)",
+    "## Guide",
+    `${guide.label} — ${guide.field_scale}`,
+    "## Budget",
+    budget.label,
+    `## Axe à planifier : ${params.axis}`,
+    "## Objets réservés aux autres axes (ne pas les reprendre)",
+    reserved || "(aucun)",
+    "## Titres rejetés (ne pas s'en inspirer)",
+    rejected,
+    "Appelle plan_one_axis_angle.",
+  ].join("\n\n");
+
+  const result = await callClaudeStructured<unknown>({
+    system,
+    user,
+    toolName: "plan_one_axis_angle",
+    inputSchema: oneAngleInputSchema,
+    zodSchema: oneAngleLlmSchema,
+    model: modelFast,
+    maxTokens: 600,
+    effort: "low",
+    toolDescription: "Planifie un nouvel angle pour l'axe à régénérer.",
+  });
+
+  const parsed = oneAngleLlmSchema.parse(result.data);
+  const axis = normalizeAxis(parsed.axis) || params.axis;
+  const angle: AnglePlanItem = {
+    axis,
+    research_object: clip(parsed.research_object, 250),
+    material: clip(parsed.material, 120),
+    angle: clip(parsed.angle, 150),
+  };
+
+  console.info(
+    JSON.stringify({
+      event: "topics.angle_plan",
+      status: "ok",
+      mode: "regen",
+      axis: params.axis,
+      latency_ms: result.latencyMs,
+      model: result.model,
+    }),
+  );
+
+  return {
+    angle,
+    model: result.model,
+    tokens_in: result.usage.inputTokens,
+    tokens_out: result.usage.outputTokens,
+    tokens_thinking: result.usage.thinkingTokens,
+    latency_ms: result.latencyMs,
+  };
+}

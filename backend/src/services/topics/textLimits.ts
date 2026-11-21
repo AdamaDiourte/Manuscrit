@@ -11,6 +11,9 @@ export const TOPIC_LIMITS = {
   risks: 220,
   first_steps: 220,
   rationale: 400,
+  pitch: 400,
+  stakes: 180,
+  leads: 180,
   keywords: 80,
   ethical_notes: 800,
   research_object: 500,
@@ -64,7 +67,14 @@ export function collectOverLimitFields(topic: GeneratedTopic): FieldLengthHit[] 
   check("field_or_corpus", topic.field_or_corpus, TOPIC_LIMITS.field_or_corpus);
   check("method", topic.method, TOPIC_LIMITS.method);
   check("rationale", topic.rationale, TOPIC_LIMITS.rationale);
+  check("pitch", topic.pitch, TOPIC_LIMITS.pitch);
   check("research_object", topic.research_object, TOPIC_LIMITS.research_object);
+  (topic.stakes || []).forEach((s, i) =>
+    check(`stakes[${i}]`, s, TOPIC_LIMITS.stakes),
+  );
+  (topic.leads || []).forEach((s, i) =>
+    check(`leads[${i}]`, s, TOPIC_LIMITS.leads),
+  );
   check(
     "expected_contribution",
     topic.expected_contribution,
@@ -186,6 +196,15 @@ export function enforceTopicLimits(topic: GeneratedTopic): GeneratedTopic {
       axis,
       field: "rationale",
     }),
+    pitch: topic.pitch
+      ? applyClamp(topic.pitch, TOPIC_LIMITS.pitch, { axis, field: "pitch" })
+      : topic.pitch,
+    stakes: (topic.stakes || []).map((s, i) =>
+      applyClamp(s, TOPIC_LIMITS.stakes, { axis, field: `stakes[${i}]` }),
+    ),
+    leads: (topic.leads || []).map((s, i) =>
+      applyClamp(s, TOPIC_LIMITS.leads, { axis, field: `leads[${i}]` }),
+    ),
     research_object: applyClamp(
       topic.research_object || "",
       TOPIC_LIMITS.research_object,
@@ -248,8 +267,11 @@ export function findTruncationSuspects(
   check("field_or_corpus", topic.field_or_corpus);
   check("method", topic.method);
   check("rationale", topic.rationale);
+  check("pitch", topic.pitch);
   check("research_object", topic.research_object);
   check("expected_contribution", topic.expected_contribution);
+  (topic.stakes || []).forEach((s, i) => check(`stakes[${i}]`, s));
+  (topic.leads || []).forEach((s, i) => check(`leads[${i}]`, s));
   (topic.hypotheses || []).forEach((h, i) => check(`hypotheses[${i}]`, h));
   (topic.feasibility?.risks || []).forEach((r, i) =>
     check(`feasibility.risks[${i}]`, r),
@@ -276,21 +298,4 @@ export function logTruncationSuspects(topics: GeneratedTopic[]): void {
   }
 }
 
-/** Parse une durée d'accès terrain (« N mois », « N semaines ») → semaines. */
-export function parseFieldAccessWeeks(
-  fieldAccess: unknown,
-): number | null {
-  if (typeof fieldAccess !== "string" || !fieldAccess.trim()) return null;
-  const t = fieldAccess.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const months = t.match(/(\d+)\s*mois/);
-  if (months) {
-    const n = Number(months[1]);
-    if (Number.isFinite(n) && n > 0) return n * 4;
-  }
-  const weeks = t.match(/(\d+)\s*semaines?/);
-  if (weeks) {
-    const n = Number(weeks[1]);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return null;
-}
+export { parseFieldAccessWeeks } from "../../../../shared/research/workPlan";

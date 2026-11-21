@@ -6,7 +6,6 @@ import {
   type DocumentOutline,
   type ProjectTypeId,
 } from "../../../../shared/research/documentStructures";
-import { writingStructureFor } from "../../../../shared/research/corpusOrganization";
 import type {
   GeneratedTopic,
   ProfileAnalysis,
@@ -14,6 +13,8 @@ import type {
 } from "../../../../shared/research/topicTypes";
 import {
   buildWorkPlanFromTopic,
+  parseFieldAccessWeeks,
+  RESEARCH_WORK_PLAN_SECTIONS,
   workPlanToScheduleTable,
 } from "../../../../shared/research/workPlan";
 import { computeTimeBudget } from "../../../../shared/research/timeBudget";
@@ -71,15 +72,28 @@ export function buildDocumentUserPrompt(input: {
     (r) => (r.relevance_score ?? 2) >= 2,
   );
 
+  const fieldAccess =
+    typeof input.answers.field_access === "string"
+      ? input.answers.field_access.trim()
+      : typeof input.fields.field_access === "string"
+        ? String(input.fields.field_access).trim()
+        : "";
+  const accessWeeks = parseFieldAccessWeeks(fieldAccess);
+
   const workPlan =
     input.kind === "work_plan"
       ? buildWorkPlanFromTopic({
           answers: {
             ...input.fields,
             project_type: input.projectType,
+            field_access: fieldAccess || undefined,
+            deadline_range:
+              input.fields.deadline_range ?? input.answers.deadline_range,
+            weekly_time:
+              input.fields.weekly_time ?? input.answers.weekly_time,
           },
           topic: input.topic,
-          sections: writingStructureFor(input.projectType),
+          sections: RESEARCH_WORK_PLAN_SECTIONS,
         })
       : null;
   const scheduleTable = workPlan ? workPlanToScheduleTable(workPlan) : null;
@@ -96,12 +110,23 @@ export function buildDocumentUserPrompt(input: {
             expected_length:
               input.fields.expected_length ?? input.axes?.F?.expected_length,
             project_type: input.projectType,
+            field_access: fieldAccess || null,
+            field_access_weeks: accessWeeks,
             budget,
           }),
           `Livrable à organiser : ${mainLabel} (${PROJECT_TYPE_LABELS[input.projectType]}).`,
-          "Le plan doit proposer un planning d’organisation concret : découper le délai de rendu en périodes, et dimensionner la colonne Charge selon le temps à consacrer au sujet par semaine (sans dépasser ce rythme).",
+          "Le plan suit le déroulement d'une recherche (pas les chapitres du mémoire) : 1) cadrage et lectures ; 2) préparation du terrain ; 3) collecte ; 4) rédaction du cadre théorique et de la méthodologie (en parallèle de la collecte) ; 5) analyse ; 6) rédaction des résultats et de la discussion ; 7) relecture. L'introduction se finalise à la fin, jamais en premier.",
+          "Découpez le délai de rendu en périodes ; dimensionnez la colonne Charge selon le temps hebdomadaire déclaré (sans dépasser ce rythme).",
           `La somme des charges du tableau ne doit pas dépasser ${budget.totalHours} h.`,
-          "Obligatoire : section schedule avec champ table rempli (4 à 7 lignes) — Période | Objectif | Actions | Livrable | Charge.",
+          typeof input.topic.estimated_hours === "number"
+            ? `Charges collecte+analyse imposées (fieldworkCosts, ne pas réestimer) : ${input.topic.estimated_hours} h. Le reste du budget (${budget.totalHours} h) pour lectures, rédaction et relecture.`
+            : "Répartissez estimated_hours sur collecte/analyse ; le reste du budget pour lectures, rédaction et relecture.",
+          `Quantités terrain à reprendre exactement (fieldwork_plan) : ${JSON.stringify(input.topic.fieldwork_plan || [])}. Ne changez aucun chiffre.`,
+          `Rythme hebdomadaire déclaré : ${budget.hoursPerWeek} h/semaine. Aucune semaine ne doit dépasser ${Math.round(budget.hoursPerWeek * 1.25 * 10) / 10} h (chevauchements compris) : étalez les phases si besoin sans changer le total ni la date de rendu.`,
+          accessWeeks != null
+            ? `Fenêtre d'accès au terrain déclarée : « ${fieldAccess} » (≈ ${accessWeeks} semaines). Si le terrain du sujet en dépend, la collecte tient dans cette fenêtre à compter du début du planning, précédée d'une préparation courte.`
+            : "",
+          "Obligatoire : section schedule avec champ table rempli (4 à 7 lignes) — Phase | Période | Objectif | Livrable | Point d’encadrement | Charge | Heures par semaine. Inclure une ligne de collecte explicite.",
           scheduleTable
             ? "Tableau de référence indicatif pour la section schedule (reprenez ces lignes, vous pouvez reformuler légèrement Actions ; conservez Période, Objectif, Livrable et Charge) :"
             : "",
@@ -123,6 +148,29 @@ export function buildDocumentUserPrompt(input: {
           "Volume : environ 5 pages minimum, contenu substantiel.",
         ];
 
+  const topicCore = {
+    axis: input.topic.axis,
+    title: input.topic.title,
+    research_object: input.topic.research_object,
+    research_question: input.topic.research_question,
+    hypotheses: input.topic.hypotheses,
+    hypothesis_tests: input.topic.hypothesis_tests,
+    pitch: input.topic.pitch,
+    stakes: input.topic.stakes,
+    leads: input.topic.leads,
+    expected_contribution: input.topic.expected_contribution,
+    fieldwork_plan: input.topic.fieldwork_plan,
+    estimated_hours: input.topic.estimated_hours,
+    field_or_corpus: input.topic.field_or_corpus,
+    method: input.topic.method,
+    context: input.topic.context,
+    rationale: input.topic.rationale,
+    feasibility: input.topic.feasibility,
+    keywords_fr: input.topic.keywords_fr,
+    keywords_en: input.topic.keywords_en,
+    ethical_notes: input.topic.ethical_notes,
+  };
+
   return [
     `Type de document : ${kindLabel}.`,
     `Type de projet : ${PROJECT_TYPE_LABELS[input.projectType]}.`,
@@ -130,7 +178,18 @@ export function buildDocumentUserPrompt(input: {
     "## Guide de niveau",
     JSON.stringify(guide),
     "## Budget de temps",
-    `${budget.label} (total ${budget.totalHours} h)`,
+    `${budget.label} (total ${budget.totalHours} h ; heures disponibles déclarées à respecter)`,
+    "## Éléments à injecter fidèlement",
+    JSON.stringify({
+      pitch: input.topic.pitch,
+      stakes: input.topic.stakes,
+      leads: input.topic.leads,
+      expected_contribution: input.topic.expected_contribution,
+      fieldwork_plan: input.topic.fieldwork_plan,
+      estimated_hours: input.topic.estimated_hours,
+      available_hours: budget.totalHours,
+      hypothesis_tests: input.topic.hypothesis_tests,
+    }),
     "## Objet de recherche",
     input.topic.research_object || input.topic.title,
     "## Analyse de profil",
@@ -142,14 +201,12 @@ export function buildDocumentUserPrompt(input: {
     "Structure obligatoire (conserve tous les id, dans cet ordre) :",
     JSON.stringify(input.outline.sections),
     "Sujet retenu :",
-    JSON.stringify({
-      ...input.topic,
-      readings: undefined,
-    }),
+    JSON.stringify(topicCore),
     "Profil pseudonymisé :",
     JSON.stringify({ axes: input.axes, fields: input.fields }),
     ...workPlanExtra,
     "## Consigne",
     "Appelle l'outil propose_document.",
+    "Rappelle : problématique = question + pour chaque hypothèse comment elle sera éprouvée ; design = fieldwork_plan sans changer les quantités ; planning = phases de recherche (cadrage → préparation → collecte → rédaction cadre théorique/méthodo pendant la collecte → analyse → rédaction des résultats → relecture), estimated_hours pour collecte/analyse ; hors collecte/analyse : cadrage 25 %, préparation 8 %, rédaction 55 %, relecture 12 % (relecture ≤ 15 % du total) ; enjeux et apport dans la section enjeu/résultats ; ton = celui du pitch.",
   ].join("\n\n");
 }

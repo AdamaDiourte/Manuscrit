@@ -1,20 +1,41 @@
 import { z } from "zod";
 import type { TopicDocument } from "../../../../shared/research/topicTypes";
 import { phaseRoleSchema } from "../../../../shared/research/workPlan";
+import { DOCUMENT_LIMITS, documentSoftMax } from "./documentLimits";
+
+/** Accepte jusqu'à soft max ; TOO_LONG + coupe ensuite. */
+const softString = (hard: number, min = 1) =>
+  z
+    .string()
+    .trim()
+    .pipe(z.string().min(min).max(documentSoftMax(hard)));
+
+const softStringOpt = (hard: number) =>
+  z
+    .string()
+    .trim()
+    .pipe(z.string().max(documentSoftMax(hard)))
+    .optional();
 
 const tableSchema = z.object({
-  headers: z.array(z.string().trim().min(1).max(80)).min(2).max(8),
+  headers: z
+    .array(softString(DOCUMENT_LIMITS.tableHeader))
+    .min(2)
+    .max(8),
   rows: z
-    .array(z.array(z.string().trim().min(1).max(400)).min(2).max(8))
+    .array(z.array(softString(DOCUMENT_LIMITS.tableCell)).min(2).max(8))
     .min(2)
     .max(10),
 });
 
 const sectionSchema = z.object({
-  id: z.string().trim().min(1).max(80),
-  heading: z.string().trim().min(2).max(200),
-  paragraphs: z.array(z.string().trim().min(8).max(4000)).min(1).max(12),
-  bullets: z.array(z.string().trim().min(2).max(400)).max(12).optional(),
+  id: softString(DOCUMENT_LIMITS.sectionId),
+  heading: softString(DOCUMENT_LIMITS.heading, 2),
+  paragraphs: z
+    .array(softString(DOCUMENT_LIMITS.paragraph, 8))
+    .min(1)
+    .max(12),
+  bullets: z.array(softString(DOCUMENT_LIMITS.bullet, 2)).max(12).optional(),
   table: tableSchema.optional(),
   /** Optionnel : une réponse IA sans `role` n’est jamais rejetée. */
   role: phaseRoleSchema.optional(),
@@ -22,42 +43,50 @@ const sectionSchema = z.object({
 
 export const topicDocumentSchema = z.object({
   kind: z.enum(["research_project", "work_plan"]),
-  projectType: z.string().trim().min(1).max(40),
-  title: z.string().trim().min(3).max(220),
-  subtitle: z.string().trim().max(300).optional(),
+  projectType: softString(DOCUMENT_LIMITS.projectType),
+  title: softString(DOCUMENT_LIMITS.title, 3),
+  subtitle: softStringOpt(DOCUMENT_LIMITS.subtitle),
   sections: z.array(sectionSchema).min(3).max(16),
 });
 
-/** Schéma plat pour output_config (repli si tool_choice refusé). */
+/** Schéma plat pour output_config (soft max aligné). */
 export const proposeDocumentLlmSchema = z.object({
   kind: z.enum(["research_project", "work_plan"]),
-  projectType: z.string(),
-  title: z.string(),
-  subtitle: z.string().optional(),
+  projectType: softString(DOCUMENT_LIMITS.projectType),
+  title: softString(DOCUMENT_LIMITS.title, 3),
+  subtitle: softStringOpt(DOCUMENT_LIMITS.subtitle),
   sections: z.array(
     z.object({
-      id: z.string(),
-      heading: z.string(),
-      paragraphs: z.array(z.string()),
-      bullets: z.array(z.string()).optional(),
+      id: softString(DOCUMENT_LIMITS.sectionId),
+      heading: softString(DOCUMENT_LIMITS.heading, 2),
+      paragraphs: z.array(softString(DOCUMENT_LIMITS.paragraph, 8)),
+      bullets: z.array(softString(DOCUMENT_LIMITS.bullet, 2)).optional(),
       table: z
         .object({
-          headers: z.array(z.string()),
-          rows: z.array(z.array(z.string())),
+          headers: z.array(softString(DOCUMENT_LIMITS.tableHeader)),
+          rows: z.array(z.array(softString(DOCUMENT_LIMITS.tableCell))),
         })
         .optional(),
     }),
   ),
 });
 
-/** JSON Schema for Anthropic tool input_schema — propose_document. */
+/** JSON Schema for Anthropic tool input_schema — limites dures. */
 export const proposeDocumentInputSchema: Record<string, unknown> = {
   type: "object",
   properties: {
     kind: { type: "string", enum: ["research_project", "work_plan"] },
-    projectType: { type: "string", minLength: 1, maxLength: 40 },
-    title: { type: "string", minLength: 3, maxLength: 220 },
-    subtitle: { type: "string", maxLength: 300 },
+    projectType: {
+      type: "string",
+      minLength: 1,
+      maxLength: DOCUMENT_LIMITS.projectType,
+    },
+    title: {
+      type: "string",
+      minLength: 3,
+      maxLength: DOCUMENT_LIMITS.title,
+    },
+    subtitle: { type: "string", maxLength: DOCUMENT_LIMITS.subtitle },
     sections: {
       type: "array",
       minItems: 3,
@@ -65,17 +94,33 @@ export const proposeDocumentInputSchema: Record<string, unknown> = {
       items: {
         type: "object",
         properties: {
-          id: { type: "string", minLength: 1, maxLength: 80 },
-          heading: { type: "string", minLength: 2, maxLength: 200 },
+          id: {
+            type: "string",
+            minLength: 1,
+            maxLength: DOCUMENT_LIMITS.sectionId,
+          },
+          heading: {
+            type: "string",
+            minLength: 2,
+            maxLength: DOCUMENT_LIMITS.heading,
+          },
           paragraphs: {
             type: "array",
-            items: { type: "string", minLength: 8, maxLength: 4000 },
+            items: {
+              type: "string",
+              minLength: 8,
+              maxLength: DOCUMENT_LIMITS.paragraph,
+            },
             minItems: 1,
             maxItems: 12,
           },
           bullets: {
             type: "array",
-            items: { type: "string", minLength: 2, maxLength: 400 },
+            items: {
+              type: "string",
+              minLength: 2,
+              maxLength: DOCUMENT_LIMITS.bullet,
+            },
             maxItems: 12,
           },
           table: {
@@ -83,7 +128,11 @@ export const proposeDocumentInputSchema: Record<string, unknown> = {
             properties: {
               headers: {
                 type: "array",
-                items: { type: "string", minLength: 1, maxLength: 80 },
+                items: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: DOCUMENT_LIMITS.tableHeader,
+                },
                 minItems: 2,
                 maxItems: 8,
               },
@@ -91,7 +140,11 @@ export const proposeDocumentInputSchema: Record<string, unknown> = {
                 type: "array",
                 items: {
                   type: "array",
-                  items: { type: "string", minLength: 1, maxLength: 400 },
+                  items: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: DOCUMENT_LIMITS.tableCell,
+                  },
                   minItems: 2,
                   maxItems: 8,
                 },
@@ -111,8 +164,67 @@ export const proposeDocumentInputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+/**
+ * Nettoyage avant Zod : paragraphs vides (sections bullets-only) et
+ * tables incomplètes (headers/rows trop courts) que le modèle laisse parfois.
+ */
+function sanitizeDocumentInput(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const doc = input as Record<string, unknown>;
+  if (!Array.isArray(doc.sections)) return input;
+  return {
+    ...doc,
+    sections: doc.sections.map((raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+      const s = { ...(raw as Record<string, unknown>) };
+      const paragraphs = Array.isArray(s.paragraphs)
+        ? (s.paragraphs as unknown[]).filter(
+            (p) => typeof p === "string" && p.trim().length >= 8,
+          )
+        : [];
+      if (paragraphs.length === 0) {
+        const bullets = Array.isArray(s.bullets)
+          ? (s.bullets as unknown[]).filter(
+              (b) => typeof b === "string" && b.trim().length > 0,
+            )
+          : [];
+        const heading =
+          typeof s.heading === "string" && s.heading.trim()
+            ? s.heading.trim()
+            : "Cette section";
+        s.paragraphs =
+          bullets.length > 0
+            ? [`Points clés pour « ${heading} » : voir la liste ci-dessous.`]
+            : [`Section « ${heading} » : à compléter avec l'encadrement.`];
+      } else {
+        s.paragraphs = paragraphs;
+      }
+      if (s.table && typeof s.table === "object" && !Array.isArray(s.table)) {
+        const table = s.table as { headers?: unknown; rows?: unknown };
+        const headers = Array.isArray(table.headers) ? table.headers : [];
+        const rows = Array.isArray(table.rows) ? table.rows : [];
+        const headersOk =
+          headers.length >= 2 &&
+          headers.every((h) => typeof h === "string" && h.trim().length > 0);
+        const rowsOk =
+          rows.length >= 2 &&
+          rows.every(
+            (r) =>
+              Array.isArray(r) &&
+              r.length >= 2 &&
+              r.every((c) => typeof c === "string" && c.trim().length > 0),
+          );
+        if (!headersOk || !rowsOk) delete s.table;
+      }
+      return s;
+    }),
+  };
+}
+
 export function parseProposeDocumentToolInput(input: unknown): TopicDocument {
-  return topicDocumentSchema.parse(input);
+  return topicDocumentSchema.parse(
+    sanitizeDocumentInput(input),
+  ) as TopicDocument;
 }
 
 export function parseTopicDocument(raw: string): TopicDocument {
@@ -124,7 +236,7 @@ export function parseTopicDocument(raw: string): TopicDocument {
     if (!match) throw new Error("JSON document invalide.");
     parsed = JSON.parse(match[0]);
   }
-  return topicDocumentSchema.parse(parsed);
+  return topicDocumentSchema.parse(parsed) as TopicDocument;
 }
 
 /** Density: long for main document, short/synthetic for work plan. */

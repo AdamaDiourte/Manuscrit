@@ -26,6 +26,13 @@ function materialIdOk(id: string) {
   return /^[A-Za-z0-9_-]{1,80}$/.test(id);
 }
 
+/** UUID ou hash SHA-256 hex — refuse chemins, "../", "/" et "\". */
+function fileIdOk(id: string) {
+  return /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[a-f0-9]{64})$/.test(
+    id,
+  );
+}
+
 function materialIdFromUrl(req: Request): string | null {
   const parts = new URL(req.url).pathname.replace(/\/+$/, "").split("/").filter(Boolean);
   const textsAt = parts.indexOf("texts");
@@ -68,23 +75,28 @@ export async function GET(req: Request) {
       { headers: { "Cache-Control": "private,no-store" } },
     );
   }
-  if (file && !/^(?:[a-f0-9-]{36}|[a-f0-9]{64})$/.test(file))
-    return new Response(null, { status: 400 });
+  // (1) Identifiant strict : pas de chemin / traversal. (2) Clé sous
+  // owners/<uid>/files/<id> uniquement — autre uid ⇒ objet absent ⇒ 404.
+  // (3) Aucun journal du nom ni du contenu ici.
+  if (file && !fileIdOk(file)) return new Response(null, { status: 400 });
   const obj = await s.bucket.get(
     s.prefix + (file ? "files/" + file : "workspace"),
   );
-  if (file)
-    return obj
-      ? new Response(obj.body, {
-          headers: {
-            "content-disposition":
-              "attachment; filename*=UTF-8''" +
-              encodeURIComponent(obj.customMetadata?.name || "document"),
-            "content-type": "application/octet-stream",
-            "cache-control": "private,no-store",
-          },
-        })
-      : new Response(null, { status: 404 });
+  if (file) {
+    if (!obj) return new Response(null, { status: 404 });
+    const name = obj.customMetadata?.name || "document";
+    const isDocx = /\.docx$/i.test(name);
+    return new Response(obj.body, {
+      headers: {
+        "content-disposition":
+          "attachment; filename*=UTF-8''" + encodeURIComponent(name),
+        "content-type": isDocx
+          ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          : "application/octet-stream",
+        "cache-control": "private,no-store",
+      },
+    });
+  }
   return Response.json(
     { data: obj ? await obj.json() : null, rev: obj?.etag || "" },
     { headers: { "Cache-Control": "no-store" } },

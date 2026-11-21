@@ -121,6 +121,9 @@ const topicSchema = z
       ),
     }),
     rationale: nonemptyString(TOPIC_LIMITS.rationale, 8),
+    pitch: nonemptyString(TOPIC_LIMITS.pitch, 8),
+    stakes: stringList(TOPIC_LIMITS.stakes, 3, 2),
+    leads: stringList(TOPIC_LIMITS.leads, 3, 2),
     keywords_fr: stringList(TOPIC_LIMITS.keywords, 12, 2),
     keywords_en: stringList(TOPIC_LIMITS.keywords, 12, 2),
     ethical_notes: nullishText(TOPIC_LIMITS.ethical_notes),
@@ -241,6 +244,9 @@ const topicLlmSchema = z.object({
     first_steps: z.array(z.string()),
   }),
   rationale: z.string(),
+  pitch: z.string(),
+  stakes: z.array(z.string()),
+  leads: z.array(z.string()),
   keywords_fr: z.array(z.string()),
   keywords_en: z.array(z.string()),
   ethical_notes: z.string().nullable(),
@@ -359,6 +365,31 @@ const topicJsonSchemaProperties: Record<string, unknown> = {
     minLength: 8,
     maxLength: TOPIC_LIMITS.rationale,
   },
+  pitch: {
+    type: "string",
+    minLength: 8,
+    maxLength: TOPIC_LIMITS.pitch,
+  },
+  stakes: {
+    type: "array",
+    items: {
+      type: "string",
+      minLength: 2,
+      maxLength: TOPIC_LIMITS.stakes,
+    },
+    minItems: 2,
+    maxItems: 3,
+  },
+  leads: {
+    type: "array",
+    items: {
+      type: "string",
+      minLength: 2,
+      maxLength: TOPIC_LIMITS.leads,
+    },
+    minItems: 2,
+    maxItems: 3,
+  },
   keywords_fr: {
     type: "array",
     items: {
@@ -473,6 +504,9 @@ const topicJsonRequired = [
   "method",
   "feasibility",
   "rationale",
+  "pitch",
+  "stakes",
+  "leads",
   "keywords_fr",
   "keywords_en",
   "ethical_notes",
@@ -703,4 +737,203 @@ export function parseTopicsOutput(raw: string): TopicsOutput {
     profile_analysis: data.profile_analysis as ProfileAnalysis | undefined,
     personalization_level: data.personalization_level,
   };
+}
+
+/** Champs du sujet acceptés dans un patch correctif (sans axis). */
+const patchFieldLlmSchema = z.object({
+  title: z.string().optional(),
+  context: z.string().optional(),
+  research_question: z.string().optional(),
+  hypotheses: z.array(z.string()).optional(),
+  field_or_corpus: z.string().optional(),
+  method: z.string().optional(),
+  feasibility: z
+    .object({
+      level: z.enum(["high", "medium", "low"]).optional(),
+      risks: z.array(z.string()).optional(),
+      first_steps: z.array(z.string()).optional(),
+    })
+    .optional(),
+  rationale: z.string().optional(),
+  pitch: z.string().optional(),
+  stakes: z.array(z.string()).optional(),
+  leads: z.array(z.string()).optional(),
+  keywords_fr: z.array(z.string()).optional(),
+  keywords_en: z.array(z.string()).optional(),
+  ethical_notes: z.string().nullable().optional(),
+  research_object: z.string().optional(),
+  profile_links: z
+    .array(
+      z.object({
+        field: z.string(),
+        profile_value: z.string(),
+        use: z.string(),
+      }),
+    )
+    .optional(),
+  title_writing_language: z.string().nullable().optional(),
+  expected_contribution: z.string().optional(),
+  fieldwork_plan: z
+    .array(
+      z.object({
+        unit: z.string(),
+        quantity: z.number(),
+      }),
+    )
+    .optional(),
+  hypothesis_tests: z
+    .array(
+      z.object({
+        hypothesis_index: z.number(),
+        comparison_or_variable: z.string(),
+        data_source: z.string(),
+      }),
+    )
+    .optional(),
+});
+
+export const patchTopicLlmSchema = z.object({
+  fields: patchFieldLlmSchema,
+});
+
+/** JSON Schema allégé — pas de minLength strict (revalidation au merge). */
+const patchJsonProperties: Record<string, unknown> = {
+  title: { type: "string" },
+  context: { type: "string" },
+  research_question: { type: "string" },
+  hypotheses: { type: "array", items: { type: "string" } },
+  field_or_corpus: { type: "string" },
+  method: { type: "string" },
+  feasibility: {
+    type: "object",
+    properties: {
+      level: { type: "string", enum: ["high", "medium", "low"] },
+      risks: { type: "array", items: { type: "string" } },
+      first_steps: { type: "array", items: { type: "string" } },
+    },
+    additionalProperties: false,
+  },
+  rationale: { type: "string" },
+  pitch: { type: "string" },
+  stakes: { type: "array", items: { type: "string" } },
+  leads: { type: "array", items: { type: "string" } },
+  keywords_fr: { type: "array", items: { type: "string" } },
+  keywords_en: { type: "array", items: { type: "string" } },
+  ethical_notes: { type: ["string", "null"] },
+  research_object: { type: "string" },
+  profile_links: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        field: { type: "string" },
+        profile_value: { type: "string" },
+        use: { type: "string" },
+      },
+      required: ["field", "profile_value", "use"],
+      additionalProperties: false,
+    },
+  },
+  title_writing_language: { type: ["string", "null"] },
+  expected_contribution: { type: "string" },
+  fieldwork_plan: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        unit: { type: "string" },
+        quantity: { type: "number" },
+      },
+      required: ["unit", "quantity"],
+      additionalProperties: false,
+    },
+  },
+  hypothesis_tests: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        hypothesis_index: { type: "integer" },
+        comparison_or_variable: { type: "string" },
+        data_source: { type: "string" },
+      },
+      required: ["hypothesis_index", "comparison_or_variable", "data_source"],
+      additionalProperties: false,
+    },
+  },
+};
+
+/** JSON Schema tool — patch_topic (champs optionnels uniquement). */
+export const patchTopicInputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    fields: {
+      type: "object",
+      properties: patchJsonProperties,
+      additionalProperties: false,
+    },
+  },
+  required: ["fields"],
+  additionalProperties: false,
+};
+
+export type PatchTopicFields = z.infer<typeof patchFieldLlmSchema>;
+
+export function parsePatchTopicToolInput(input: unknown): {
+  fields: PatchTopicFields;
+} {
+  const result = patchTopicLlmSchema.safeParse(input);
+  if (!result.success) {
+    console.info(
+      JSON.stringify({
+        event: "topics.validate",
+        status: "error",
+        tool: "patch_topic",
+        issues: zodIssueCodes(result.error),
+      }),
+    );
+    throw result.error;
+  }
+  return result.data;
+}
+
+/**
+ * Fusionne un patch partiel sur un sujet existant, puis revalide via topicSchema.
+ */
+export function mergeTopicPatch(
+  base: Record<string, unknown>,
+  fields: PatchTopicFields,
+): z.infer<typeof topicSchema> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    if (key === "feasibility" && value && typeof value === "object") {
+      const prev = (base.feasibility || {}) as Record<string, unknown>;
+      const next = value as Record<string, unknown>;
+      merged.feasibility = {
+        level: next.level ?? prev.level,
+        risks: next.risks ?? prev.risks,
+        first_steps: next.first_steps ?? prev.first_steps,
+      };
+      continue;
+    }
+    merged[key] = value;
+  }
+  // Ne jamais laisser le patch changer l'axe.
+  merged.axis = base.axis;
+  delete merged.warnings;
+  delete merged.literature_density;
+  const parsed = topicSchema.safeParse(merged);
+  if (!parsed.success) {
+    console.info(
+      JSON.stringify({
+        event: "topics.validate",
+        status: "error",
+        tool: "patch_topic_merge",
+        issues: zodIssueCodes(parsed.error),
+      }),
+    );
+    throw parsed.error;
+  }
+  return parsed.data;
 }

@@ -8,6 +8,8 @@ export const FIELDWORK_UNIT_HOURS = {
   questionnaire_response: 8,
   document: 0.5,
   secondary_dataset: 25,
+  /** Analyse approfondie de données secondaires, par mois. */
+  secondary_analysis_month: 140,
   archive_day: 8,
 } as const;
 
@@ -59,6 +61,7 @@ const UNIT_LABEL_FR: Record<FieldworkUnit, string> = {
   questionnaire_response: "tranche(s) de 100 répondants",
   document: "document(s)",
   secondary_dataset: "base(s) secondaire(s)",
+  secondary_analysis_month: "mois d'analyse secondaire",
   archive_day: "journée(s) d'archives",
 };
 
@@ -79,6 +82,7 @@ export function formatFieldworkUnitCostsForPrompt(): string {
     `- questionnaire_response (analyse, par tranche de 100 répondants) : ${FIELDWORK_UNIT_HOURS.questionnaire_response} h`,
     `- document (document de corpus codé) : ${FIELDWORK_UNIT_HOURS.document} h`,
     `- secondary_dataset (prise en main d'une base existante, forfait) : ${FIELDWORK_UNIT_HOURS.secondary_dataset} h`,
+    `- secondary_analysis_month (analyse approfondie de données secondaires, par mois) : ${FIELDWORK_UNIT_HOURS.secondary_analysis_month} h`,
     `- archive_day (journée d'archives) : ${FIELDWORK_UNIT_HOURS.archive_day} h`,
   ].join("\n");
 }

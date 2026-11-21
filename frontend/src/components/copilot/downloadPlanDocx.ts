@@ -1,4 +1,4 @@
-import { downloadBase64File } from "../topics/downloadDocx";
+import { downloadDocx } from "../topics/downloadDocx";
 
 export type PlanDocKind = "plan" | "schedule";
 
@@ -24,9 +24,5 @@ export async function downloadPlanDocx(input: {
   });
   const data = await response.json();
   if (!response.ok) throw Error(data.error || "Export impossible.");
-  downloadBase64File(
-    data.file.filename,
-    data.file.mimeType,
-    data.file.base64,
-  );
+  downloadDocx(data.file.base64, data.file.filename);
 }

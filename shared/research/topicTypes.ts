@@ -120,6 +120,15 @@ export type GeneratedTopic = {
     first_steps: string[];
   };
   rationale: string;
+  /**
+   * Voix de l'enseignant : pourquoi ce sujet pour la personne (≤ 400).
+   * Affiché à la place de rationale quand présent.
+   */
+  pitch?: string;
+  /** Enjeux scientifiques / sociaux / pour la personne (2–3, ≤ 180 chacun). */
+  stakes?: string[];
+  /** Pistes d'approfondissement ou variantes (2–3, ≤ 180 chacun). */
+  leads?: string[];
   keywords_fr: string[];
   keywords_en: string[];
   ethical_notes: string | null;
@@ -147,7 +156,12 @@ export type GeneratedTopic = {
   readings?: VerifiedReading[];
 };
 
-export type TopicWarningCode = "META_HYPOTHESIS" | "UNDER_SCALE";
+export type TopicWarningCode =
+  | "META_HYPOTHESIS"
+  | "UNDER_SCALE"
+  | "MISSING_TEST"
+  | "COMPLEX_DESIGN"
+  | "REMAINING_DEFECT";
 
 export type TopicWarning = {
   code: TopicWarningCode;

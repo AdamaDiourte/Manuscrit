@@ -16,11 +16,24 @@ import {
 } from "../../../../shared/research/projectLevelGuides";
 import type { PseudonymizedProfile } from "../../../../shared/privacy/buildPseudonymizedProfile";
 import { RESEARCH_TOPICS_SYSTEM } from "../../prompts/researchTopicsSystem";
+import {
+  formatMethodThresholdsSummary,
+  formatUnitOfAnalysisRule,
+  METHOD_THRESHOLDS,
+} from "../../../../shared/research/methodThresholds";
 import type { AnglePlanItem } from "./planAngles";
 import { parseFieldAccessWeeks } from "./textLimits";
 
+function injectMethodThresholds(text: string): string {
+  let out = text;
+  for (const [key, value] of Object.entries(METHOD_THRESHOLDS)) {
+    out = out.replaceAll(`{{${key}}}`, String(value));
+  }
+  return out;
+}
+
 export function systemPrompt(): string {
-  return RESEARCH_TOPICS_SYSTEM;
+  return injectMethodThresholds(RESEARCH_TOPICS_SYSTEM);
 }
 
 const PROFILE_THEMES: Array<{ title: string; ids: string[] }> = [
@@ -147,11 +160,14 @@ function sharedPromptHeader(input: {
     "Coûts unitaires (heures, tout compris) :",
     formatFieldworkUnitCostsForPrompt(),
     "Dimensionne fieldwork_plan pour rester sous ce plafond.",
+    "## Unité d'analyse (seuils)",
+    formatUnitOfAnalysisRule(),
+    formatMethodThresholdsSummary(),
   ];
   if (accessWeeks != null) {
     lines.push(
       "## Fenêtre d'accès au terrain",
-      `L'accès déclaré dure environ ${accessWeeks} semaines : la collecte sur ce terrain doit tenir dans cette fenêtre, ou prévoir comment la prolonger.`,
+      `L'accès déclaré dure environ ${accessWeeks} semaines. Cette contrainte ne s'applique qu'aux sujets dont field_or_corpus repose réellement sur cet accès (ex. stage, structure d'accueil). Un terrain en ligne ou un corpus indépendant de cet accès n'est pas borné par cette fenêtre.`,
     );
   }
   return lines;
@@ -301,6 +317,110 @@ export function buildCorrectionUserPrompt(input: {
     "## Consigne",
     "Corrige uniquement les points listés ci-dessus, puis rappelle l'outil propose_topics (ou propose_topic si un seul sujet).",
   ].join("\n\n");
+}
+
+/**
+ * Correction « patch » : ne renvoie que les champs modifiés.
+ */
+export function buildPatchCorrectionUserPrompt(input: {
+  axis: TopicAxis;
+  topic: GeneratedTopic;
+  violationListFr: string;
+  extraInstruction?: string;
+}): string {
+  return [
+    `## Axe ${input.axis} — correction ciblée`,
+    "Ne réécris pas tout le sujet. Renvoie uniquement les champs à modifier via l'outil patch_topic.",
+    "## Sujet actuel",
+    JSON.stringify(input.topic),
+    "## Violations à corriger (uniquement ces points)",
+    input.violationListFr,
+    input.extraInstruction || "",
+    "## Consigne",
+    "Corrige uniquement les points listés. Si tu utilises patch_topic, renvoie { fields: { <nom_du_champ>: <nouvelle_valeur> } } avec seulement les champs changés. Sinon appelle propose_topic avec le sujet corrigé.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function buildOverlapPatchUserPrompt(input: {
+  axis: TopicAxis;
+  topic: GeneratedTopic;
+  otherTopics: Array<
+    Pick<GeneratedTopic, "axis" | "title" | "research_object" | "field_or_corpus">
+  >;
+  explanation: string;
+}): string {
+  return buildCrossBlockingPatchUserPrompt({
+    ...input,
+    issues: [{ code: "OVERLAP", explanation: input.explanation }],
+  });
+}
+
+/** Correction ciblée pour tout bloquant de relecture croisée (OVERLAP, ETHICS…). */
+export function buildCrossBlockingPatchUserPrompt(input: {
+  axis: TopicAxis;
+  topic: GeneratedTopic;
+  otherTopics: Array<
+    Pick<GeneratedTopic, "axis" | "title" | "research_object" | "field_or_corpus">
+  >;
+  issues: Array<{ code: string; explanation: string }>;
+  /** @deprecated prefer issues */
+  explanation?: string;
+}): string {
+  const others = input.otherTopics
+    .map(
+      (t) =>
+        `- ${t.axis} : objet « ${t.research_object || t.title} » — terrain : ${(t.field_or_corpus || "").slice(0, 160)}`,
+    )
+    .join("\n");
+  const issues = input.issues?.length
+    ? input.issues
+    : input.explanation
+      ? [{ code: "OVERLAP", explanation: input.explanation }]
+      : [];
+  const violationListFr = issues
+    .map((i) => `${i.code} : ${i.explanation}`)
+    .join("\n");
+  const hasOverlap = issues.some((i) => i.code === "OVERLAP");
+  const extra: string[] = [];
+  if (hasOverlap) {
+    extra.push(
+      "## Autres axes (objets à éviter)",
+      others,
+      "Pour OVERLAP : change research_object et field_or_corpus (et si besoin title, research_question, hypotheses, hypothesis_tests) pour écarter clairement les objets et terrains des deux autres axes.",
+    );
+  }
+  if (issues.some((i) => i.code === "ETHICS" || i.code === "MINORS_ETHICS")) {
+    extra.push(
+      "Pour ETHICS / mineurs : corrige ethical_notes, leads et le recrutement (pas de fichier d'usagers ; autorisations si mineurs).",
+    );
+  }
+  if (issues.some((i) => i.code === "ONLINE_ETHICS")) {
+    extra.push(
+      "Pour contenus en ligne : ethical_notes doit couvrir espaces publics, CGU, pseudonymisation dès la collecte, pas de citation littérale retrouvable, prudence opinions/santé.",
+    );
+  }
+  if (
+    issues.some((i) =>
+      ["INCONSISTENT", "METHOD_MISMATCH", "TESTABILITY", "CLARITY", "RELEVANCE"].includes(
+        i.code,
+      ),
+    )
+  ) {
+    extra.push(
+      "Aligne pitch, stakes, leads, question, hypothèses, terrain et méthode pour lever l'incohérence ou l'inadéquation signalée.",
+    );
+  }
+  extra.push(
+    "Ne régénère pas un sujet entièrement différent du cahier des charges de l'axe. Corrige uniquement les points listés.",
+  );
+  return buildPatchCorrectionUserPrompt({
+    axis: input.axis,
+    topic: input.topic,
+    violationListFr,
+    extraInstruction: extra.join("\n"),
+  });
 }
 
 export type { ProfileAnalysis };

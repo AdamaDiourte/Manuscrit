@@ -151,12 +151,12 @@ async function fetchReadings(ticket, axis, answers) {
   };
 }
 
-async function document(ticket, axis, answers) {
+async function document(ticket, axis, answers, kind = "research_project") {
   const res = await fetch(`${BASE}/api/topics/document`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: ORIGIN },
     body: JSON.stringify({
-      kind: "research_project",
+      kind,
       ticket,
       topic: {
         axis,
@@ -170,7 +170,7 @@ async function document(ticket, axis, answers) {
   const data = await res.json();
   if (!res.ok)
     throw new Error(
-      `document HTTP ${res.status} ${data.error || JSON.stringify(data)}`,
+      `document HTTP ${res.status} ${kind} ${data.error || JSON.stringify(data)}`,
     );
   return data;
 }
@@ -235,6 +235,30 @@ async function runProfile(name, effort) {
     blocking_corrections: job.blocking_corrections || [],
     angle_plan: job.angle_plan || null,
     axes_meta: job.axes_meta || null,
+    timing_shared: job.timing_shared || null,
+    timing_by_axis: Object.fromEntries(
+      ["mastery", "ambition", "discovery"].map((axis) => {
+        const meta = job.axes_meta?.[axis] || {};
+        const t = meta.timing || {};
+        return [
+          axis,
+          {
+            angle_plan_ms: job.timing_shared?.angle_plan_ms ?? null,
+            generate_ms: t.generate_ms ?? null,
+            quality_check_ms: t.quality_check_ms ?? null,
+            review_ms: t.review_ms ?? null,
+            correction_ms: t.correction_ms ?? null,
+            cross_review_ms: job.timing_shared?.cross_review_ms ?? null,
+          },
+        ];
+      }),
+    ),
+    warnings_by_axis: Object.fromEntries(
+      topics.map((t) => [
+        t.axis,
+        (t.warnings || []).map((w) => ({ code: w.code, message: w.message })),
+      ]),
+    ),
     first_ready_ms: job.first_ready_ms ?? job.client_first_ready_ms,
     last_ready_ms: job.last_ready_ms ?? job.client_last_ready_ms,
     latency_topics_ms: job.latency_ms ?? job.client_total_ms,
@@ -285,13 +309,25 @@ for (const name of only) {
   await writeBoth(runDir, latestDir, `topics-${name}.json`, summary.topics);
 }
 
-if (only.includes("B") && report.B) {
-  const ambition = report.B.topics.find((t) => t.axis === "ambition");
-  console.error("Document B/ambition…");
-  const doc = await document(report.B.ticket, "ambition", profiles.B);
+if (only.includes("B") && report.B && process.env.VERIFY_SKIP_DOCUMENT !== "1") {
+  const mastery = report.B.topics.find((t) => t.axis === "mastery");
+  console.error("Document B/mastery research_project…");
+  const doc = await document(
+    report.B.ticket,
+    "mastery",
+    profiles.B,
+    "research_project",
+  );
   const sections = doc.document?.sections || [];
   const problem = sections.find(
     (s) => s.id === "problem" || /problématique/i.test(s.heading || ""),
+  );
+  const design = sections.find(
+    (s) =>
+      s.id === "method" ||
+      /design de recherche|dispositif méthodologique|démarche/i.test(
+        s.heading || "",
+      ),
   );
   const theory = sections.find(
     (s) =>
@@ -299,16 +335,31 @@ if (only.includes("B") && report.B) {
       s.id === "state" ||
       /cadre th|repères/i.test(s.heading || ""),
   );
+  console.error("Document B/mastery work_plan…");
+  const planDoc = await document(
+    report.B.ticket,
+    "mastery",
+    profiles.B,
+    "work_plan",
+  );
+  const planSections = planDoc.document?.sections || [];
+  const schedule = planSections.find(
+    (s) => s.id === "schedule" || /planning|calendrier/i.test(s.heading || ""),
+  );
   await writeBoth(runDir, latestDir, "profile-B-document.json", {
     title: doc.document?.title,
     model: doc.model,
     simulated: doc.simulated,
-    ticket_axis: "ambition",
-    ticket_title: ambition?.title || null,
+    ticket_axis: "mastery",
+    ticket_title: mastery?.title || null,
     client_forged_title_rejected:
       doc.document?.title !== "SUJET CLIENT FORGE — NE PAS UTILISER",
     problem,
+    design,
     theory,
+    work_plan_title: planDoc.document?.title || null,
+    work_plan: planDoc.document?.workPlan || null,
+    schedule,
     bibliography: doc.bibliography || null,
   });
 }

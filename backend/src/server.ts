@@ -45,6 +45,7 @@ app.get("/api/topics/jobs/:id",adapter(topics.GET_job,origin));
 app.post("/api/topics/regenerate",adapter(topics.POST_regenerate,origin));
 app.post("/api/topics/readings",adapter(topics.POST_readings,origin));
 app.post("/api/topics/document",adapter(topics.POST_document,origin));
+app.post("/api/topics/archive-document",adapter(topics.POST_archiveDocument,origin));
 app.use("/api",(_req,res)=>{res.sendStatus(404)});
 const assets=resolve(dirname(fileURLToPath(import.meta.url)),"../../frontend/dist");
 app.use(express.static(assets));

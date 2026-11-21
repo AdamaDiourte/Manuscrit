@@ -31,6 +31,7 @@ import TopicGenerator from "../topics/TopicGenerator";
 import type { DocFile } from "../topics/TopicResults";
 import { useConfirmDialog } from "../topics/ConfirmDialog";
 import {
+  downloadArchivedDoc,
   emptyArchiveMessage,
   makeArchiveId,
   mergeTopicArchives,
@@ -276,9 +277,7 @@ export default function ResearchStudio({
     page === "Organiser mon manuscrit" ? readResumeIntent() : "gate",
   );
   const [freshStart, setFreshStart] = useState(false);
-  const [openProposals, setOpenProposals] = useState<Record<string, boolean>>(
-    {},
-  );
+  const [archiveTabs, setArchiveTabs] = useState<Record<string, string>>({});
   const [openCorpusProjects, setOpenCorpusProjects] = useState<
     Record<string, boolean>
   >({});
@@ -460,20 +459,55 @@ export default function ResearchStudio({
     if (m) open(m);
   }, [mode, p.id, p.materials, open]);
 
-  function proposalsOpen(entryId: string, index: number) {
-    if (Object.prototype.hasOwnProperty.call(openProposals, entryId)) {
-      return openProposals[entryId];
+  function archiveActiveAxis(entry: TopicArchiveEntry): string {
+    const stored = archiveTabs[entry.id];
+    if (stored && entry.topics.some((t) => t.axis === stored)) return stored;
+    if (
+      entry.chosenTopic?.axis &&
+      entry.topics.some((t) => t.axis === entry.chosenTopic!.axis)
+    ) {
+      return entry.chosenTopic.axis;
     }
-    return index === 0;
+    return entry.topics[0]?.axis || "mastery";
   }
 
-  function toggleProposals(entryId: string, index: number) {
-    setOpenProposals((prev) => {
-      const currently = Object.prototype.hasOwnProperty.call(prev, entryId)
-        ? prev[entryId]
-        : index === 0;
-      return { ...prev, [entryId]: !currently };
-    });
+  function setArchiveActiveAxis(entryId: string, axis: string) {
+    setArchiveTabs((prev) => ({ ...prev, [entryId]: axis }));
+  }
+
+  async function downloadArchiveDocument(
+    entry: TopicArchiveEntry,
+    doc: NonNullable<TopicArchiveEntry["documents"]>[number],
+  ) {
+    if (busy) return;
+    wait(true);
+    notice("");
+    try {
+      const { fileId, filename } = await downloadArchivedDoc({
+        projectId: p.id,
+        archiveId: entry.id,
+        doc,
+      });
+      if (fileId !== doc.fileId || filename !== doc.filename) {
+        const current = draftRef.current;
+        const existing = archiveList(current);
+        const nextArchive = existing.map((e) => {
+          if (e.id !== entry.id || !e.documents?.length) return e;
+          return {
+            ...e,
+            documents: e.documents.map((d) =>
+              d.kind === doc.kind ? { ...d, fileId, filename } : d,
+            ),
+          };
+        });
+        await persistDraft({ ...current, topicArchive: nextArchive });
+      }
+      notice("Document téléchargé (Word).");
+    } catch (e: any) {
+      notice(e?.message || "Téléchargement Word impossible.");
+    } finally {
+      wait(false);
+    }
   }
 
   const update = (key: string, value: any) => {
@@ -1192,14 +1226,20 @@ export default function ResearchStudio({
             <div className="cp-heading">
               <h2>Archive des propositions</h2>
               <p>
-                Chaque sollicitation conserve les trois sujets, le choix retenu
-                le cas échéant, puis le projet et le plan générés.
+                Chaque sollicitation présente les trois sujets en onglets. Sur
+                le sujet choisi, téléchargez le projet et le plan générés.
               </p>
             </div>
-            {topicArchive.map((entry, index) => {
+            {topicArchive.map((entry) => {
               const pType = normalizeProjectType(entry.projectType);
               const chosenAxis = entry.chosenTopic?.axis;
-              const open = proposalsOpen(entry.id, index);
+              const activeAxis = archiveActiveAxis(entry);
+              const activeTopic =
+                entry.topics.find((t) => t.axis === activeAxis) ||
+                entry.topics[0];
+              const activeIsChosen = Boolean(
+                activeTopic && chosenAxis === activeTopic.axis,
+              );
               const entryDay = new Date(entry.at).toDateString();
               const sameDay = topicArchive.filter(
                 (e) => new Date(e.at).toDateString() === entryDay,
@@ -1260,148 +1300,133 @@ export default function ResearchStudio({
                     </button>
                   </div>
 
-                  {entry.chosenTopic ? (
-                    <div className="topic-archive-block topic-archive-chosen-summary">
-                      <strong>Sujet choisi</strong>
-                      <div className="topic-archive-topic is-chosen">
-                        <div className="topic-archive-topic-head">
-                          <span
-                            className="topic-archive-topic-title"
-                            title={entry.chosenTopic.title}
-                          >
-                            {entry.chosenTopic.title}
+                  <div
+                    className="topic-archive-tabs"
+                    role="tablist"
+                    aria-label="Trois sujets proposés"
+                  >
+                    {entry.topics.map((t) => {
+                      const selected = activeAxis === t.axis;
+                      const isChosen = chosenAxis === t.axis;
+                      return (
+                        <button
+                          key={t.axis}
+                          type="button"
+                          role="tab"
+                          id={`archive-tab-${entry.id}-${t.axis}`}
+                          aria-selected={selected}
+                          aria-controls={`archive-panel-${entry.id}-${t.axis}`}
+                          tabIndex={selected ? 0 : -1}
+                          className={
+                            selected
+                              ? "topic-archive-tab is-active"
+                              : "topic-archive-tab"
+                          }
+                          onClick={() =>
+                            setArchiveActiveAxis(entry.id, t.axis)
+                          }
+                        >
+                          <span>
+                            {AXIS_LABEL[t.axis] || t.axis}
+                            {isChosen ? (
+                              <em className="topic-archive-tab-chosen">
+                                Choisi
+                              </em>
+                            ) : null}
                           </span>
-                          <span className="topic-axis">
-                            {AXIS_LABEL[entry.chosenTopic.axis] ||
-                              entry.chosenTopic.axis}
-                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {activeTopic ? (
+                    <div
+                      role="tabpanel"
+                      id={`archive-panel-${entry.id}-${activeTopic.axis}`}
+                      aria-labelledby={`archive-tab-${entry.id}-${activeTopic.axis}`}
+                      className={
+                        activeIsChosen
+                          ? "topic-archive-panel is-chosen"
+                          : "topic-archive-panel"
+                      }
+                    >
+                      <div className="topic-archive-topic-head">
+                        <span
+                          className="topic-archive-topic-title"
+                          title={activeTopic.title}
+                        >
+                          {activeTopic.title}
+                        </span>
+                        <span className="topic-axis">
+                          {AXIS_LABEL[activeTopic.axis] || activeTopic.axis}
+                        </span>
+                        {activeIsChosen ? (
                           <em className="topic-archive-chosen-tag">
                             Sujet choisi
                           </em>
-                        </div>
-                        {entry.chosenTopic.research_question ? (
-                          <small
-                            className="topic-archive-topic-q"
-                            title={entry.chosenTopic.research_question}
-                          >
-                            {entry.chosenTopic.research_question}
-                          </small>
                         ) : null}
                       </div>
+                      {activeTopic.research_question ? (
+                        <small
+                          className="topic-archive-topic-q"
+                          title={activeTopic.research_question}
+                        >
+                          {activeTopic.research_question}
+                        </small>
+                      ) : null}
+                      {activeTopic.pitch ? (
+                        <p className="topic-archive-topic-pitch">
+                          {activeTopic.pitch}
+                        </p>
+                      ) : null}
+
+                      {activeIsChosen ? (
+                        entry.documents?.length ? (
+                          <div className="topic-archive-files">
+                            <strong>Fichiers du sujet</strong>
+                            <p className="topic-archive-doc-hint">
+                              Téléchargez le projet et le plan tels qu’ils ont
+                              été générés pour ce sujet.
+                            </p>
+                            <div className="topic-doc-download">
+                              {entry.documents.map((doc) => (
+                                <button
+                                  key={doc.kind}
+                                  type="button"
+                                  className="secondary"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void downloadArchiveDocument(entry, doc)
+                                  }
+                                >
+                                  <i
+                                    className="fa-solid fa-download"
+                                    aria-hidden="true"
+                                  />{" "}
+                                  Télécharger{" "}
+                                  {documentKindLabel(doc.kind, pType)} (Word)
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="topic-archive-empty">
+                            Projet / plan non archivés pour ce sujet.
+                          </p>
+                        )
+                      ) : (
+                        <p className="topic-archive-empty">
+                          {entry.chosenTopic
+                            ? "Les fichiers projet et plan sont disponibles sur l’onglet du sujet choisi."
+                            : "Aucun sujet n’a encore été retenu pour cette sollicitation."}
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <p className="topic-archive-empty">
-                      Aucun sujet n’a encore été retenu pour cette
-                      sollicitation.
+                      Aucune proposition conservée.
                     </p>
                   )}
-
-                  {entry.documents?.length ? (
-                    <div className="topic-archive-block">
-                      <strong>Fichiers du sujet choisi</strong>
-                      <p className="topic-archive-doc-hint">
-                        Retéléchargez le projet et le plan tels qu’ils ont été
-                        générés, sans nouvelle modification.
-                      </p>
-                      <div className="topic-doc-download">
-                        {entry.documents.map((doc) => (
-                          <a
-                            key={doc.kind}
-                            className="secondary"
-                            href={"/api/workspace?file=" + doc.fileId}
-                            download={doc.filename}
-                          >
-                            <i
-                              className="fa-solid fa-download"
-                              aria-hidden="true"
-                            />{" "}
-                            Retélécharger{" "}
-                            {documentKindLabel(doc.kind, pType)} (Word)
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                  ) : entry.chosenTopic ? (
-                    <p className="topic-archive-empty">
-                      Projet / plan non archivés pour cette entrée.
-                    </p>
-                  ) : null}
-
-                  <div className="topic-archive-block">
-                    <button
-                      type="button"
-                      className="topic-archive-toggle"
-                      aria-expanded={open}
-                      onClick={() => toggleProposals(entry.id, index)}
-                    >
-                      <span>
-                        Trois propositions
-                        <small>
-                          {open ? "Masquer" : "Afficher"} ·{" "}
-                          {entry.topics.length} sujet
-                          {entry.topics.length > 1 ? "s" : ""}
-                        </small>
-                      </span>
-                      <i
-                        className={
-                          open
-                            ? "fa-solid fa-chevron-up"
-                            : "fa-solid fa-chevron-down"
-                        }
-                        aria-hidden="true"
-                      />
-                    </button>
-                    <div
-                      className={
-                        open
-                          ? "topic-archive-collapse is-open"
-                          : "topic-archive-collapse"
-                      }
-                    >
-                      <div className="topic-archive-collapse-inner">
-                        <ul className="topic-archive-topics">
-                          {entry.topics.map((t) => {
-                            const isChosen = chosenAxis === t.axis;
-                            return (
-                              <li
-                                key={t.axis}
-                                className={
-                                  isChosen
-                                    ? "topic-archive-topic is-chosen"
-                                    : "topic-archive-topic"
-                                }
-                              >
-                                <div className="topic-archive-topic-head">
-                                  <span
-                                    className="topic-archive-topic-title"
-                                    title={t.title}
-                                  >
-                                    {t.title}
-                                  </span>
-                                  <span className="topic-axis">
-                                    {AXIS_LABEL[t.axis] || t.axis}
-                                  </span>
-                                  {isChosen ? (
-                                    <em className="topic-archive-chosen-tag">
-                                      Sujet choisi
-                                    </em>
-                                  ) : null}
-                                </div>
-                                {isChosen && t.research_question ? (
-                                  <small
-                                    className="topic-archive-topic-q"
-                                    title={t.research_question}
-                                  >
-                                    {t.research_question}
-                                  </small>
-                                ) : null}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    </div>
-                  </div>
                 </section>
               );
             })}

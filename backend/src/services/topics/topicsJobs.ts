@@ -11,6 +11,13 @@ const TTL_MS = 10 * 60 * 1000;
 
 export type AxisJobStatus = "pending" | "done" | "error";
 
+export type AxisTiming = {
+  generate_ms: number;
+  quality_check_ms: number;
+  review_ms: number;
+  correction_ms: number;
+};
+
 export type BlockingCorrectionTrace = {
   axis: TopicAxis;
   code: string;
@@ -40,6 +47,7 @@ export type TopicsJobAxisState = {
   review_status?: ReviewStatus;
   latency_ms?: number;
   ready_at_ms?: number;
+  timing?: AxisTiming;
 };
 
 export type TopicsJob = {
@@ -67,6 +75,11 @@ export type TopicsJob = {
   last_ready_ms?: number;
   error_code?: string;
   angle_plan?: AnglePlanItem[];
+  /** Timing agrégé (ms) — angle_plan + cross_review partagés ; étapes axe dans axes.*.timing */
+  timing_shared?: {
+    angle_plan_ms: number;
+    cross_review_ms: number;
+  };
 };
 
 const jobs = new Map<string, TopicsJob>();
@@ -180,24 +193,28 @@ export function jobPublicView(job: TopicsJob): Record<string, unknown> {
     first_ready_ms: job.first_ready_ms ?? null,
     last_ready_ms: job.last_ready_ms ?? null,
     angle_plan: job.angle_plan || null,
+    timing_shared: job.timing_shared || null,
     axes_meta: {
       mastery: {
         violations_first: job.axes.mastery.violations_first || [],
         violations_after: job.axes.mastery.violations_after || [],
         latency_ms: job.axes.mastery.latency_ms ?? null,
         review_issues: job.axes.mastery.review_issues || [],
+        timing: job.axes.mastery.timing || null,
       },
       ambition: {
         violations_first: job.axes.ambition.violations_first || [],
         violations_after: job.axes.ambition.violations_after || [],
         latency_ms: job.axes.ambition.latency_ms ?? null,
         review_issues: job.axes.ambition.review_issues || [],
+        timing: job.axes.ambition.timing || null,
       },
       discovery: {
         violations_first: job.axes.discovery.violations_first || [],
         violations_after: job.axes.discovery.violations_after || [],
         latency_ms: job.axes.discovery.latency_ms ?? null,
         review_issues: job.axes.discovery.review_issues || [],
+        timing: job.axes.discovery.timing || null,
       },
     },
     complete: axesDone && job.status !== "running",

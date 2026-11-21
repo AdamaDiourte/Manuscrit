@@ -9,6 +9,7 @@ import {
   normalizeProjectType,
   PROJECT_TYPE_LABELS,
 } from "../../../../shared/research/documentStructures";
+import { buildDocxFilename } from "../../../../shared/research/docxFilename";
 import type {
   TopicDocument,
   VerifiedReading,
@@ -32,23 +33,41 @@ import {
   planningSubtitle,
 } from "../research/buildWorkPlanDocxParts";
 
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+/** Buffer DOCX valide : signature ZIP PK et taille > 2 Ko. */
+export function assertValidDocxBuffer(buffer: Buffer): void {
+  const ok =
+    buffer.length > 2048 && buffer[0] === 0x50 && buffer[1] === 0x4b;
+  if (ok) return;
+  console.info(
+    JSON.stringify({
+      event: "docx.build_failed",
+      size: buffer.length,
+      hasPk: buffer.length >= 2 && buffer[0] === 0x50 && buffer[1] === 0x4b,
+      at: new Date().toISOString(),
+    }),
+  );
+  const err = new Error(
+    "Le document Word n’a pas pu être préparé correctement.",
+  ) as Error & { status: number; code: string };
+  err.status = 502;
+  err.code = "docx.build_failed";
+  throw err;
+}
+
 async function packBuffer(
   document: Document,
-  kindLabel: string,
+  kind: TopicDocument["kind"],
   title: string,
+  projectType: string,
 ) {
   const buffer = Buffer.from(await Packer.toBuffer(document));
-  const safe = `${kindLabel}-${title}`
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 70);
+  assertValidDocxBuffer(buffer);
   return {
-    filename: `${safe || "document-manuscrit"}.docx`,
-    mimeType:
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    filename: buildDocxFilename(kind, title, projectType),
+    mimeType: DOCX_MIME,
     buffer,
   };
 }
@@ -123,13 +142,16 @@ export async function buildTopicDocx(
   const kindLabel = documentKindLabel(doc.kind, projectType);
 
   if (doc.kind === "work_plan" && isUsableWorkPlan(doc.workPlan)) {
-    return buildWorkPlanDocument({
+    const file = await buildWorkPlanDocument({
       plan: doc.workPlan,
       projectTitle: doc.title,
       documentLabel: kindLabel,
       title: doc.title || "Plan de travail",
-      filenameBase: kindLabel,
+      filenameKind: "work_plan",
+      projectType,
     });
+    assertValidDocxBuffer(file.buffer);
+    return file;
   }
 
   const children: (Paragraph | Table)[] = [docTitle(doc.title)];
@@ -191,5 +213,5 @@ export async function buildTopicDocx(
     ],
   });
 
-  return packBuffer(document, kindLabel, doc.title);
+  return packBuffer(document, doc.kind, doc.title, projectType);
 }

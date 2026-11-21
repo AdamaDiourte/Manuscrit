@@ -243,6 +243,7 @@ export default function TopicGenerator({
   async function regenerate(axis: TopicAxis, reason: RegenReason) {
     setError("");
     setBusy(true);
+    setAxisStatus((prev) => ({ ...prev, [axis]: "pending" }));
     try {
       const res = await fetch("/api/topics/regenerate", {
         method: "POST",
@@ -258,26 +259,63 @@ export default function TopicGenerator({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Régénération impossible.");
-      const nextTopics = data.topics as GeneratedTopic[];
-      setTopics(nextTopics);
-      setTicket(data.ticket);
-      setRegens(data.regenerationsRemaining ?? 0);
-      setModel(data.model || "");
-      setSimulated(Boolean(data.simulated));
-      if (
-        data.personalization_level === "high" ||
-        data.personalization_level === "medium" ||
-        data.personalization_level === "low"
-      ) {
-        setPersonalizationLevel(data.personalization_level);
+      const jobId = data.job_id as string;
+      if (!jobId) throw new Error("Identifiant de régénération manquant.");
+
+      let nextTopics: GeneratedTopic[] = [];
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const jr = await fetch(`/api/topics/jobs/${jobId}`);
+        const job = await jr.json();
+        if (!jr.ok)
+          throw new Error(job.error || "Suivi de régénération impossible.");
+
+        const nextStatus: Partial<
+          Record<TopicAxis, "pending" | "done" | "error">
+        > = {};
+        const collected: GeneratedTopic[] = [];
+        for (const a of ["mastery", "ambition", "discovery"] as TopicAxis[]) {
+          const ax = job.axes?.[a];
+          nextStatus[a] = ax?.status || "pending";
+          if (ax?.status === "done" && ax.topic) {
+            collected.push(ax.topic as GeneratedTopic);
+          }
+        }
+        setAxisStatus(nextStatus);
+        setTopics(collected);
+
+        if (job.status === "error") {
+          throw new Error("Régénération interrompue.");
+        }
+        if (job.status === "done" && job.ticket) {
+          nextTopics = collected;
+          setTicket(job.ticket);
+          setRegens(job.regenerationsRemaining ?? 0);
+          setModel(job.model || "");
+          setSimulated(Boolean(job.simulated));
+          if (
+            job.personalization_level === "high" ||
+            job.personalization_level === "medium" ||
+            job.personalization_level === "low"
+          ) {
+            setPersonalizationLevel(job.personalization_level);
+          }
+          setReviewStatus(
+            job.review_status === "failed" || job.review_status === "ok"
+              ? job.review_status
+              : "ok",
+          );
+          break;
+        }
       }
+
       if (sessionId) {
         await onTopicsGenerated?.({
           sessionId,
           topics: nextTopics,
           answers,
-          model: data.model || "",
-          simulated: Boolean(data.simulated),
+          model: model || "",
+          simulated: Boolean(simulated),
         });
       }
     } catch (e: unknown) {

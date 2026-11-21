@@ -9,10 +9,15 @@ import {
   getProjectLevelGuide,
 } from "../../../../shared/research/projectLevelGuides";
 import {
+  formatMethodThresholdsSummary,
+  formatUnitOfAnalysisRule,
+} from "../../../../shared/research/methodThresholds";
+import {
   callClaudeStructured,
   getClaudeSettings,
 } from "../llm/claude";
 import { truncateAtWord } from "../scholarly/sourceTypes";
+import { parseFieldAccessWeeks } from "./textLimits";
 
 export type ReviewCode =
   | "TESTABILITY"
@@ -20,13 +25,20 @@ export type ReviewCode =
   | "UNSUPPORTED_CLAIM"
   | "VAGUE_OBJECT"
   | "METHOD_MISMATCH"
-  | "OVERLAP";
+  | "OVERLAP"
+  | "FEASIBILITY_RISK"
+  | "CLARITY"
+  | "RELEVANCE"
+  | "INCONSISTENT"
+  | "ETHICS";
 
 export type ReviewIssue = {
   axis: TopicAxis;
   code: ReviewCode;
   severity: "blocking" | "minor";
   explanation: string;
+  /** true seulement si un défaut réel est constaté (filtre anti-faux positifs). */
+  confirmed_defect: boolean;
 };
 
 export type ReviewStatus = "ok" | "failed";
@@ -46,10 +58,26 @@ const CODE_ALIASES: Record<string, ReviewCode> = {
   vague_object: "VAGUE_OBJECT",
   method_mismatch: "METHOD_MISMATCH",
   overlap: "OVERLAP",
+  feasibility_risk: "FEASIBILITY_RISK",
+  clarity: "CLARITY",
+  relevance: "RELEVANCE",
+  inconsistent: "INCONSISTENT",
+  ethics: "ETHICS",
 };
 
-const METHOD_MISMATCH_STAT_QUAL_RE =
-  /statist|fr[eé]quen|proportion|sous-groupe|qualitat|entretien|petit\s+(échantillon|corpus|n)|moins de\s*\d+\s*entretien/i;
+const VALID_CODES = new Set<ReviewCode>([
+  "TESTABILITY",
+  "ORIGINALITY",
+  "UNSUPPORTED_CLAIM",
+  "VAGUE_OBJECT",
+  "METHOD_MISMATCH",
+  "OVERLAP",
+  "FEASIBILITY_RISK",
+  "CLARITY",
+  "RELEVANCE",
+  "INCONSISTENT",
+  "ETHICS",
+]);
 
 function normalizeAxis(raw: unknown): TopicAxis | null {
   if (typeof raw !== "string") return null;
@@ -64,16 +92,7 @@ function normalizeAxis(raw: unknown): TopicAxis | null {
 function normalizeCode(raw: unknown): ReviewCode | null {
   if (typeof raw !== "string") return null;
   const upper = raw.trim().toUpperCase().replace(/\s+/g, "_");
-  if (
-    upper === "TESTABILITY" ||
-    upper === "ORIGINALITY" ||
-    upper === "UNSUPPORTED_CLAIM" ||
-    upper === "VAGUE_OBJECT" ||
-    upper === "METHOD_MISMATCH" ||
-    upper === "OVERLAP"
-  ) {
-    return upper;
-  }
+  if (VALID_CODES.has(upper as ReviewCode)) return upper as ReviewCode;
   const lower = raw.trim().toLowerCase().replace(/\s+/g, "_");
   return CODE_ALIASES[lower] || null;
 }
@@ -83,6 +102,18 @@ function normalizeSeverity(raw: unknown): "blocking" | "minor" {
   const s = raw.trim().toLowerCase();
   if (s === "blocking" || s === "bloque" || s === "bloquant") return "blocking";
   return "minor";
+}
+
+function normalizeConfirmedDefect(raw: unknown): boolean {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const s = raw.trim().toLowerCase();
+    if (s === "true" || s === "1" || s === "oui" || s === "yes") return true;
+    if (s === "false" || s === "0" || s === "non" || s === "no") return false;
+  }
+  if (typeof raw === "number") return raw !== 0;
+  // Absent ou illisible : ne pas compter (évite les faux positifs).
+  return false;
 }
 
 /**
@@ -98,6 +129,7 @@ const reviewLlmFlatSchema = z.object({
       code: z.string(),
       severity: z.string(),
       explanation: z.string(),
+      confirmed_defect: z.union([z.boolean(), z.string()]).optional(),
     }),
   ),
 });
@@ -115,8 +147,15 @@ const reviewInputSchema = {
           code: { type: "string" },
           severity: { type: "string" },
           explanation: { type: "string", maxLength: 200 },
+          confirmed_defect: { type: "boolean" },
         },
-        required: ["axis", "code", "severity", "explanation"],
+        required: [
+          "axis",
+          "code",
+          "severity",
+          "explanation",
+          "confirmed_defect",
+        ],
         additionalProperties: false,
       },
     },
@@ -177,25 +216,37 @@ function parseIssues(
       );
       continue;
     }
+    const confirmed_defect = normalizeConfirmedDefect(
+      (item as { confirmed_defect?: unknown }).confirmed_defect,
+    );
+    // Filtre anti-faux positifs : ne compter que les défauts confirmés.
+    if (!confirmed_defect) {
+      skipped.push(`unconfirmed:${code}`);
+      continue;
+    }
     let severity = normalizeSeverity(item.severity);
     const explanation = truncateAtWord(
       String(item.explanation || "").trim() || "Problème signalé.",
       200,
     );
-    if (code === "TESTABILITY" || code === "OVERLAP") severity = "blocking";
     if (
-      code === "METHOD_MISMATCH" &&
-      METHOD_MISMATCH_STAT_QUAL_RE.test(explanation)
-    ) {
+      code === "TESTABILITY" ||
+      code === "OVERLAP" ||
+      code === "METHOD_MISMATCH" ||
+      code === "CLARITY" ||
+      code === "RELEVANCE" ||
+      code === "INCONSISTENT" ||
+      code === "ETHICS"
+    )
       severity = "blocking";
-    }
+    if (code === "FEASIBILITY_RISK") severity = "minor";
     if (
       code === "ORIGINALITY" &&
       (projectType === "thesis" || projectType === "article")
     ) {
       severity = "blocking";
     }
-    out.push({ axis, code, severity, explanation });
+    out.push({ axis, code, severity, explanation, confirmed_defect: true });
   }
   if (skipped.length) {
     console.info(
@@ -272,27 +323,42 @@ export async function reviewTopics(params: {
   );
   const budget = computeTimeBudget(params.answers);
   const projectType = String(params.answers.project_type || "");
-
-  const accessHint =
+  const accessWeeks = parseFieldAccessWeeks(params.answers.field_access);
+  const accessDeclared =
     typeof params.answers.field_access === "string" &&
     params.answers.field_access.trim()
-      ? ` Fenêtre d'accès déclarée : « ${params.answers.field_access.trim()} ». Si la collecte sur ce terrain dépasse clairement cette fenêtre sans plan de prolongation, signale TESTABILITY.`
+      ? params.answers.field_access.trim()
       : "";
+
+  const accessHint = accessDeclared
+    ? ` Fenêtre d'accès déclarée : « ${accessDeclared} »${
+        accessWeeks != null ? ` (≈ ${accessWeeks} semaines)` : ""
+      }. Elle ne s'applique qu'aux sujets dont field_or_corpus repose sur cet accès. Un terrain en ligne ou un corpus indépendant n'est pas borné par cette fenêtre. Si la collecte sur l'accès déclaré dépasse clairement la fenêtre sans plan de prolongation, signale FEASIBILITY_RISK (mineur), pas TESTABILITY.`
+    : "";
 
   const system = [
     "Tu es un relecteur critique de sujets de recherche. Tu ne réécris rien.",
     "Pour chaque sujet, signale uniquement les problèmes réels selon cette grille :",
-    "TESTABILITY : une hypothèse ne peut pas être testée avec le terrain prévu (variation absente, données inadaptées), ou le dispositif n'est pas réalisable dans la fenêtre d'accès au terrain déclarée.",
+    "TESTABILITY (blocking) : une hypothèse ne peut pas être éprouvée du tout, parce que la variable, la variation ou la donnée nécessaire n'est pas recueillie. Un recrutement incertain, un calendrier tendu ou un risque d'attrition ne relèvent PAS de ce code.",
+    "FEASIBILITY_RISK (toujours minor) : risque de faisabilité (recrutement non garanti, calendrier tendu, attrition, accès fragile). Pas un blocage.",
     "ORIGINALITY : la contribution ne correspond pas au niveau (pour thèse ou article, simple réplication d'un résultat connu).",
-    "UNSUPPORTED_CLAIM : le rationale, le contexte ou les liens affirment sur la personne ou sur le monde quelque chose d'absent du profil et non général — y compris un genre attribué à la personne.",
+    "UNSUPPORTED_CLAIM : le rationale, le pitch, le contexte ou les liens affirment sur la personne ou sur le monde quelque chose d'absent du profil et non général — y compris un genre attribué à la personne.",
     "VAGUE_OBJECT : l'objet manque de précision (population, type de lieu ou période flous).",
-    "METHOD_MISMATCH : la méthode ne permet pas de répondre à la question ; ou une hypothèse statistique (fréquences, proportions, écarts entre groupes) testée sur un matériau qualitatif de petite taille (blocking dans ce cas).",
-    "OVERLAP (toujours blocking) : uniquement si au moins deux sujets sont fournis. Deux sujets partagent le même objet, ou le même terrain avec des questions proches. Compare research_object, field_or_corpus et les hypothèses. Signale l'axe le moins adapté au cahier des charges de son axe. Si un seul sujet est fourni, n'émets jamais OVERLAP.",
+    "CLARITY (blocking) : titre ou question ambigus, doubles, jargonneux, ou qui juxtaposent des mots-clés au lieu de nommer un objet et un angle. Dans l'explication, propose une reformulation courte.",
+    "RELEVANCE (blocking) : le sujet ne découle pas réellement du profil (ignore centres d'intérêt, accès au terrain ou méthodes déclarés alors qu'ils sont renseignés, ou ne tient pas compte de ce que la personne saura faire).",
+    "METHOD_MISMATCH (blocking) uniquement si la règle de l'unité d'analyse ci-dessous est enfreinte, ou si la méthode ne permet pas de répondre à la question. Dans l'explication, cite l'effectif ou le volume estimé sur lequel tu t'appuies.",
+    formatUnitOfAnalysisRule().replace(/\n/g, " "),
+    formatMethodThresholdsSummary().replace(/\n/g, " "),
+    "INCONSISTENT (blocking) : le pitch, les enjeux (stakes) ou les pistes (leads) décrivent un matériau, une méthode ou un objet différents de ceux de la question, des hypothèses et du terrain ; ou bien la méthode ne peut pas mesurer ce que la question cherche. Tu reçois pitch, stakes et leads : vérifie-les.",
+    "ETHICS (blocking) : recrutement à partir d'un fichier de données personnelles (usagers, abonnés, clients, élèves, salariés), collecte cachée de données sensibles, enquête auprès de mineurs sans autorisation prévue, ou pistes (leads) qui proposent l'une de ces pratiques. Relayer une invitation via la structure est acceptable.",
+    "OVERLAP (blocking) : uniquement si au moins deux sujets sont fournis. Seulement si deux sujets partagent à la fois la même population (ou le même type de documents), le même terrain ou matériau, ET une question de recherche proche. Partager le thème d'intérêt du profil est attendu et n'est PAS un chevauchement. Signale l'axe le moins adapté au cahier des charges de son axe. Si un seul sujet est fourni, n'émets jamais OVERLAP.",
+    "Axe ambition : un dispositif exigeant ou une méthode à apprendre sont voulus. Ne demande pas de les réduire (pas de METHOD_MISMATCH ni TESTABILITY pour « trop ambitieux ») tant que le plan n'est pas signalé hors budget en code.",
     "Pour TESTABILITY : utilise hypothesis_tests (comparison_or_variable + data_source) et vérifie la cohérence avec field_or_corpus / fieldwork_plan ; ne reconstruis pas le test toi-même." +
       accessHint,
     "axis doit être exactement mastery, ambition ou discovery (anglais, minuscules).",
-    "code doit être exactement TESTABILITY, ORIGINALITY, UNSUPPORTED_CLAIM, VAGUE_OBJECT, METHOD_MISMATCH ou OVERLAP.",
+    "code doit être exactement TESTABILITY, ORIGINALITY, UNSUPPORTED_CLAIM, VAGUE_OBJECT, METHOD_MISMATCH, OVERLAP, FEASIBILITY_RISK, CLARITY, RELEVANCE, INCONSISTENT ou ETHICS.",
     "severity = blocking ou minor.",
+    "confirmed_defect = true seulement si un défaut réel est constaté ; false si tu hésites, si le point est limite, ou si tu conclurais « pas de violation ». Ne compte que confirmed_defect=true.",
     "explanation ≤ 200 caractères. Si aucun problème, renvoie issues: [].",
   ].join(" ");
 
@@ -307,11 +373,15 @@ export async function reviewTopics(params: {
     fieldwork_plan: t.fieldwork_plan,
     estimated_hours: t.estimated_hours,
     method: t.method,
+    pitch: t.pitch,
+    stakes: t.stakes,
+    leads: t.leads,
     rationale: t.rationale,
     context: t.context,
     expected_contribution: t.expected_contribution,
     ethical_notes: t.ethical_notes,
     profile_links: t.profile_links,
+    risks: t.feasibility?.risks,
   }));
 
   const user = [
@@ -425,4 +495,48 @@ export function formatReviewIssuesForCorrection(
         `Sujet ${i.axis} [${i.code}/${i.severity}] : ${i.explanation}`,
     )
     .join("\n");
+}
+
+/**
+ * Intègre les FEASIBILITY_RISK mineurs dans risks s'ils n'y figurent pas déjà.
+ */
+export function attachFeasibilityRisksFromReview(
+  topics: GeneratedTopic[],
+  issues: ReviewIssue[],
+): GeneratedTopic[] {
+  return topics.map((topic) => {
+    const risks = [...(topic.feasibility?.risks || [])];
+    const relevant = issues.filter(
+      (i) =>
+        i.code === "FEASIBILITY_RISK" &&
+        i.axis === topic.axis &&
+        i.explanation.trim(),
+    );
+    for (const issue of relevant) {
+      const needle = issue.explanation
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .slice(0, 48);
+      const already = risks.some((r) =>
+        r
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .includes(needle),
+      );
+      if (!already) {
+        risks.push(truncateAtWord(issue.explanation, 220));
+      }
+    }
+    return {
+      ...topic,
+      feasibility: {
+        ...topic.feasibility,
+        level: topic.feasibility?.level || "medium",
+        risks: risks.slice(0, 6),
+        first_steps: topic.feasibility?.first_steps || [],
+      },
+    };
+  });
 }

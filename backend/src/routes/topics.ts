@@ -5,8 +5,11 @@ import {
   validateAnswersPayload,
   validateConsents,
 } from "../services/topics/validateAnswers";
-import { generateTopics } from "../services/topics/generate";
-import { startTopicsGenerateJob } from "../services/topics/runTopicsJob";
+import { normalizeTopicAnswers } from "../../../shared/research/topicQuestions";
+import {
+  startTopicsGenerateJob,
+  startTopicsRegenJob,
+} from "../services/topics/runTopicsJob";
 import {
   getTopicsJob,
   jobPublicView,
@@ -14,8 +17,6 @@ import {
 import { generateTopicDocument } from "../services/topics/generateDocument";
 import {
   appendRejectedTitle,
-  consumeRegen,
-  issueTicket,
   normalizeTicketSnapshot,
   verifyTicket,
 } from "../services/topics/generationTicket";
@@ -34,7 +35,7 @@ import type {
   VerifiedReading,
 } from "../../../shared/research/topicTypes";
 import type { SourcesStatusMap } from "../services/scholarly/sourceTypes";
-import type { GenerateEffort } from "../services/topics/generate";
+import type { GenerateEffort } from "../services/topics/generateAxis";
 
 const reply = (body: unknown, status = 200) =>
   Response.json(body, {
@@ -324,70 +325,44 @@ export async function POST_regenerate(req: Request) {
       );
     const snapshot = normalizeTicketSnapshot(current.topics);
     const previousTopics = snapshot?.topics;
-    const previousTitle = previousTopics?.find((t) => t.axis === body.axis)
+    if (!previousTopics || previousTopics.length !== 3)
+      return reply({ error: "Sujets précédents introuvables." }, 400);
+    const previousTitle = previousTopics.find((t) => t.axis === body.axis)
       ?.title;
     const rejectedTitles = appendRejectedTitle(
       snapshot?.rejectedTitles || [],
       previousTitle,
     );
 
-    const result = await generateTopics(
+    const job = startTopicsRegenJob({
+      uid,
       answers,
-      config,
-      {
-        axis: body.axis,
-        reason: body.reason,
-        previousTitle,
-        previousTopics,
-        rejectedTitles,
-        profile_analysis: snapshot?.profile_analysis,
-      },
-      { simulate: acceptSimulate(body.simulate) },
-    );
-    const { nextToken, payload } = consumeRegen(body.ticket, uid, config, {
-      topics: result.topics,
+      env: config,
+      axis: body.axis,
+      reason: body.reason,
+      previousTopics,
       rejectedTitles,
-      profile_analysis:
-        result.profile_analysis || snapshot?.profile_analysis,
+      previousTitle,
+      profile_analysis: snapshot?.profile_analysis,
+      ticket: body.ticket,
+      simulate: acceptSimulate(body.simulate),
     });
 
     console.info(
       JSON.stringify({
         event: "topics.regenerate",
         uidPseudo: uid.slice(0, 8),
-        status: "ok",
+        status: "started",
         at: new Date().toISOString(),
+        job_id: job.id.slice(0, 8),
         axis: body.axis,
-        rem: payload.rem,
-        model: result.model,
-        tokens_in: result.tokens_in ?? null,
-        tokens_out: result.tokens_out ?? null,
-        tokens_thinking: result.tokens_thinking ?? null,
-        structured_mode: result.structured_mode ?? null,
-        latency_ms: result.latency_ms,
-        attempts: result.attempts,
-        violations: result.violations,
-        simulated: Boolean(result.simulated),
       }),
     );
 
     return reply({
-      topics: result.topics,
-      model: result.model,
-      ticket: nextToken,
-      regenerationsRemaining: payload.rem,
-      aiGenerated: !result.simulated,
-      simulated: Boolean(result.simulated),
-      profile_analysis:
-        result.profile_analysis || snapshot?.profile_analysis,
-      personalization_level: result.personalization_level,
-      violations: result.violations,
-      attempts: result.attempts,
-      latency_ms: result.latency_ms,
-      tokens_in: result.tokens_in,
-      tokens_out: result.tokens_out,
-      tokens_thinking: result.tokens_thinking,
-      structured_mode: result.structured_mode,
+      job_id: job.id,
+      status: "running",
+      axis: body.axis,
       noticeVersion: NOTICE_VERSION,
       persistence: "none",
     });
@@ -496,8 +471,16 @@ export async function POST_document(req: Request) {
     );
 
   try {
-    const body = documentSchema.parse(await req.json());
-    validateConsents(body.consents);
+    let body: z.infer<typeof documentSchema>;
+    try {
+      body = documentSchema.parse(await req.json());
+      validateConsents(body.consents);
+    } catch (e: unknown) {
+      const err = e as { name?: string };
+      if (err?.name === "ZodError")
+        return reply({ error: "Demande de document invalide." }, 400);
+      throw e;
+    }
     const answers = validateAnswersPayload(body.answers);
     const current = verifyTicket(body.ticket, uid, config);
     const snapshot = normalizeTicketSnapshot(current.topics);
@@ -553,12 +536,140 @@ export async function POST_document(req: Request) {
       noticeVersion: NOTICE_VERSION,
     });
   } catch (e: unknown) {
-    const err = e as { name?: string; message?: string; status?: number };
-    if (err?.name === "ZodError")
-      return reply({ error: "Demande de document invalide." }, 400);
+    const err = e as { name?: string; message?: string; status?: number; issues?: unknown[] };
+    if (err?.name === "ZodError") {
+      console.info(
+        JSON.stringify({
+          event: "topics.document",
+          status: "zod_error",
+          issues: Array.isArray(err.issues)
+            ? err.issues.slice(0, 5).map((i) => {
+                const issue = i as { path?: unknown; code?: string; message?: string };
+                return {
+                  path: Array.isArray(issue.path) ? issue.path.join(".") : "",
+                  code: issue.code || "",
+                  message: String(issue.message || "").slice(0, 120),
+                };
+              })
+            : [],
+        }),
+      );
+      return reply(
+        { error: "Document généré invalide. Réessayez." },
+        502,
+      );
+    }
     console.info(
       JSON.stringify({
         event: "topics.document",
+        uidPseudo: uid.slice(0, 8),
+        status: "error",
+        at: new Date().toISOString(),
+        code: Number.isInteger(err.status) ? err.status : 502,
+      }),
+    );
+    return reply(
+      { error: err.message || "Document indisponible." },
+      Number.isInteger(err.status) ? (err.status as number) : 502,
+    );
+  }
+}
+
+/**
+ * Regénère un Word d’archive (projet / plan) à partir du sujet déjà stocké
+ * dans le workspace — sans jeton de session (celui-ci a souvent expiré).
+ */
+export async function POST_archiveDocument(req: Request) {
+  const uid = uidOf(req);
+  const config = configOf();
+  if (!uid) return reply({ error: "Connexion requise." }, 403);
+
+  const limited = topicsRateLimit(uid);
+  if (!limited.ok)
+    return reply(
+      {
+        error: "Trop de demandes. Réessayez dans quelques minutes.",
+        retryAfterSec: limited.retryAfterSec,
+      },
+      429,
+    );
+
+  const schema = z.object({
+    projectId: z.string().min(1).max(120),
+    archiveId: z.string().min(1).max(120),
+    kind: z.enum(["research_project", "work_plan"]),
+  });
+
+  try {
+    let body: z.infer<typeof schema>;
+    try {
+      body = schema.parse(await req.json());
+    } catch {
+      return reply({ error: "Demande de document invalide." }, 400);
+    }
+
+    const prefix = "owners/" + encodeURIComponent(uid) + "/";
+    const ws = await env.BUCKET.get(prefix + "workspace");
+    if (!ws) return reply({ error: "Espace de travail introuvable." }, 404);
+    const data = (await ws.json()) as { projects?: any[] };
+    const project = (data.projects || []).find((p) => p?.id === body.projectId);
+    if (!project) return reply({ error: "Projet introuvable." }, 404);
+
+    const archive = Array.isArray(project.copilot?.topicArchive)
+      ? project.copilot.topicArchive
+      : [];
+    const entry = archive.find((e: any) => e?.id === body.archiveId);
+    if (!entry) return reply({ error: "Sollicitation introuvable." }, 404);
+    const topic = entry.chosenTopic as GeneratedTopic | null | undefined;
+    if (!topic?.axis || !topic?.title)
+      return reply({ error: "Aucun sujet choisi pour cette sollicitation." }, 404);
+
+    // Profil déjà validé à la génération — pas de revalidation bloc 1 stricte.
+    const rawAnswers =
+      entry.answers && typeof entry.answers === "object"
+        ? (entry.answers as Record<string, unknown>)
+        : ((project.copilot?.topicAnswers as Record<string, unknown>) || {});
+    const answers = normalizeTopicAnswers(rawAnswers);
+
+    const resolved = await resolveReadingsForTopic(topic, answers);
+    const enriched: GeneratedTopic = {
+      ...topic,
+      literature_density: resolved.literature_density,
+      readings: resolved.readings.length ? resolved.readings : topic.readings,
+    };
+
+    const result = await generateTopicDocument({
+      answers,
+      topic: enriched,
+      kind: body.kind,
+      env: config,
+      // Même mode que la génération d’origine (simulation déjà produite = resimulation OK).
+      simulate: Boolean(entry.simulated),
+    });
+
+    console.info(
+      JSON.stringify({
+        event: "topics.archive_document",
+        uidPseudo: uid.slice(0, 8),
+        status: "ok",
+        at: new Date().toISOString(),
+        kind: body.kind,
+        model: result.model,
+        simulated: result.simulated,
+      }),
+    );
+
+    return reply({
+      file: result.file,
+      model: result.model,
+      simulated: result.simulated,
+      noticeVersion: NOTICE_VERSION,
+    });
+  } catch (e: unknown) {
+    const err = e as { message?: string; status?: number };
+    console.info(
+      JSON.stringify({
+        event: "topics.archive_document",
         uidPseudo: uid.slice(0, 8),
         status: "error",
         at: new Date().toISOString(),

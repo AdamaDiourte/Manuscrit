@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useRef,
   useState,
   type CSSProperties,
   type ReactNode,
@@ -26,8 +27,17 @@ import {
 } from "../../../../shared/research/workPlan";
 import { computeTimeBudget } from "../../../../shared/research/timeBudget";
 import { fieldworkAvailableHours } from "../../../../shared/research/fieldworkCosts";
-import { downloadBase64File } from "./downloadDocx";
+import { downloadDocx } from "./downloadDocx";
 import WorkPlanView from "../copilot/WorkPlanView";
+
+type DocPrepStatus = "pending" | "ready" | "error";
+
+type DocPrepState = {
+  kind: DocumentKind;
+  status: DocPrepStatus;
+  file?: DocFile;
+  error?: string;
+};
 
 const AXIS_LABEL: Record<TopicAxis, string> = {
   mastery: "Maîtrise",
@@ -253,7 +263,13 @@ export default function TopicResults({
     Partial<Record<TopicAxis, RegenReason | "">>
   >({});
   const [chosen, setChosen] = useState<GeneratedTopic | null>(null);
-  const [docs, setDocs] = useState<DocFile[]>([]);
+  const [docPrep, setDocPrep] = useState<DocPrepState[]>([]);
+  const docPrepRef = useRef<DocPrepState[]>([]);
+  const [preparingDocs, setPreparingDocs] = useState(false);
+
+  useEffect(() => {
+    docPrepRef.current = docPrep;
+  }, [docPrep]);
   const [workPlanPreview, setWorkPlanPreview] = useState<WorkPlan | null>(null);
   const [bibliography, setBibliography] = useState<Bibliography | null>(null);
   const [pendingAxis, setPendingAxis] = useState<TopicAxis | "">("");
@@ -376,44 +392,109 @@ export default function TopicResults({
     };
   }
 
+  function updateDocPrep(
+    kind: DocumentKind,
+    patch: Partial<DocPrepState>,
+  ) {
+    setDocPrep((prev) =>
+      prev.map((d) => (d.kind === kind ? { ...d, ...patch } : d)),
+    );
+  }
+
+  async function prepareOneDocument(
+    topic: GeneratedTopic,
+    kind: DocumentKind,
+  ): Promise<DocFile | null> {
+    updateDocPrep(kind, { status: "pending", error: undefined, file: undefined });
+    try {
+      const result = await fetchDocument(topic, kind);
+      updateDocPrep(kind, { status: "ready", file: result.file, error: undefined });
+      if (kind === "research_project") {
+        setBibliography(result.bibliography);
+      }
+      if (kind === "work_plan") {
+        const fromApi = result.document?.workPlan?.phases?.length
+          ? result.document.workPlan
+          : null;
+        setWorkPlanPreview(
+          fromApi ||
+            buildWorkPlanFromTopic({
+              answers,
+              topic,
+              sections: writingStructureFor(
+                normalizeProjectType(answers.project_type),
+              ),
+            }),
+        );
+      }
+      return result.file;
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error
+          ? e.message
+          : kind === "work_plan"
+            ? "Le plan de travail n’a pas pu être préparé."
+            : "Le projet de recherche n’a pas pu être préparé.";
+      updateDocPrep(kind, {
+        status: "error",
+        error:
+          kind === "work_plan"
+            ? "Le plan de travail n’a pas pu être préparé."
+            : "Le projet de recherche n’a pas pu être préparé.",
+        file: undefined,
+      });
+      onError(message);
+      return null;
+    }
+  }
+
   async function chooseTopic(topic: GeneratedTopic) {
     onError("");
     onBusy(true);
     setPendingAxis(topic.axis);
     setBibliography(null);
+    setWorkPlanPreview(null);
+    setChosen(topic);
+    setPreparingDocs(true);
+    setDocPrep([
+      { kind: "research_project", status: "pending" },
+      { kind: "work_plan", status: "pending" },
+    ]);
+    scrollFormTop();
     try {
-      const [project, plan] = await Promise.all([
-        fetchDocument(topic, "research_project"),
-        fetchDocument(topic, "work_plan"),
+      const [projectFile, planFile] = await Promise.all([
+        prepareOneDocument(topic, "research_project"),
+        prepareOneDocument(topic, "work_plan"),
       ]);
-      const generated = [project.file, plan.file];
-      setDocs(generated);
-      setBibliography(project.bibliography);
-      const fromApi = plan.document?.workPlan?.phases?.length
-        ? plan.document.workPlan
-        : null;
-      setWorkPlanPreview(
-        fromApi ||
-          buildWorkPlanFromTopic({
-            answers,
-            topic,
-            sections: writingStructureFor(
-              normalizeProjectType(answers.project_type),
-            ),
-          }),
+      const generated = [projectFile, planFile].filter(
+        (f): f is DocFile => Boolean(f),
       );
-      setChosen(topic);
-      if (onChooseTopic) await onChooseTopic(topic, generated);
-      else scrollFormTop();
-    } catch (e: unknown) {
-      onError(
-        e instanceof Error
-          ? e.message
-          : "Génération des documents impossible.",
-      );
+      if (onChooseTopic && generated.length) {
+        await onChooseTopic(topic, generated);
+      }
     } finally {
+      setPreparingDocs(false);
       onBusy(false);
       setPendingAxis("");
+    }
+  }
+
+  async function retryDocument(kind: DocumentKind) {
+    if (!chosen) return;
+    onError("");
+    onBusy(true);
+    setPreparingDocs(true);
+    try {
+      const file = await prepareOneDocument(chosen, kind);
+      if (file && onChooseTopic) {
+        const ready = docPrepRef.current
+          .filter((d) => d.status === "ready" && d.file)
+          .map((d) => d.file!);
+        await onChooseTopic(chosen, ready);
+      }
+    } finally {
+      setPreparingDocs(false);
+      onBusy(false);
     }
   }
 
@@ -440,9 +521,9 @@ export default function TopicResults({
         <div className="topic-section-head">
           <h2>Sujet retenu</h2>
           <p>
-            Le {mainLabel.toLowerCase()} et le plan de travail ont été générés
-            pour ce sujet. Le plan propose un planning d’organisation calé sur
-            votre délai de rendu et le temps à consacrer au sujet par semaine.
+            {preparingDocs || docPrep.some((d) => d.status === "pending")
+              ? "Préparation de votre projet de recherche et de votre plan de travail (environ 30 secondes)…"
+              : `Le ${mainLabel.toLowerCase()} et le plan de travail sont prêts pour ce sujet. Téléchargez chaque fichier quand vous le souhaitez.`}
           </p>
         </div>
 
@@ -458,21 +539,58 @@ export default function TopicResults({
 
         {error && <p role="alert">{error}</p>}
 
-        <div className="topic-doc-download">
-          {docs.map((doc) => (
-            <button
-              key={doc.kind}
-              type="button"
-              className="secondary"
-              disabled={busy}
-              onClick={() =>
-                downloadBase64File(doc.filename, doc.mimeType, doc.base64)
-              }
-            >
-              Télécharger{" "}
-              {documentKindLabel(doc.kind, projectType)} (Word)
-            </button>
-          ))}
+        <div className="topic-doc-download topic-doc-prep">
+          {docPrep.map((doc) => {
+            const label = documentKindLabel(doc.kind, projectType);
+            const statusLabel =
+              doc.status === "pending"
+                ? "en cours"
+                : doc.status === "ready"
+                  ? "prêt"
+                  : "échec";
+            return (
+              <div key={doc.kind} className="topic-doc-prep-row">
+                <p className="topic-doc-prep-status" role="status">
+                  {label} : {statusLabel}
+                  {doc.error ? ` — ${doc.error}` : ""}
+                </p>
+                {doc.status === "ready" && doc.file ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      const result = downloadDocx(
+                        doc.file!.base64,
+                        doc.file!.filename,
+                      );
+                      if (!result.ok) {
+                        onError(
+                          `${label} : fichier invalide, retéléchargement impossible.`,
+                        );
+                      }
+                    }}
+                  >
+                    Télécharger {label} (Word)
+                  </button>
+                ) : null}
+                {doc.status === "error" ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => void retryDocument(doc.kind)}
+                  >
+                    Réessayer
+                  </button>
+                ) : null}
+                {doc.status === "pending" ? (
+                  <button type="button" className="secondary" disabled>
+                    Préparation…
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
 
         {workPlanPreview?.phases?.length ? (
@@ -492,7 +610,8 @@ export default function TopicResults({
             disabled={busy}
             onClick={() => {
               setChosen(null);
-              setDocs([]);
+              setDocPrep([]);
+              setPreparingDocs(false);
               setWorkPlanPreview(null);
               setBibliography(null);
               scrollFormTop();
@@ -621,82 +740,167 @@ export default function TopicResults({
               </div>
 
               <div className="topic-card-axes">
-                {(topic.context || topic.rationale) && (
-                  <div className="topic-kv topic-kv-context">
-                    <strong>Contexte</strong>
-                    <ClampText lines={4}>
-                      <p>{topic.context || topic.rationale}</p>
+                {topic.pitch ? (
+                  <div className="topic-kv topic-pitch">
+                    <strong>Pourquoi ce sujet</strong>
+                    <ClampText lines={5}>
+                      <p>{topic.pitch}</p>
                     </ClampText>
                   </div>
-                )}
+                ) : topic.rationale ? (
+                  <div className="topic-kv topic-why">
+                    <strong>Pourquoi ce sujet pour vous</strong>
+                    <ClampText>
+                      <p>{topic.rationale}</p>
+                    </ClampText>
+                  </div>
+                ) : null}
                 <div className="topic-kv">
                   <strong>Question</strong>
                   <ClampText>
                     <p>{topic.research_question}</p>
                   </ClampText>
                 </div>
-                <div className="topic-kv">
-                  <strong>Hypothèses</strong>
-                  <ul>
-                    {topic.hypotheses.slice(0, 2).map((h, i) => (
-                      <li key={i}>{h}</li>
-                    ))}
-                  </ul>
-                </div>
-                {topic.hypothesis_tests && topic.hypothesis_tests.length > 0 ? (
-                  <details className="topic-hypothesis-tests">
-                    <summary>Comment tester les hypothèses</summary>
+                {topic.stakes && topic.stakes.length > 0 ? (
+                  <div className="topic-kv topic-stakes">
+                    <strong>Enjeux</strong>
                     <ul>
-                      {topic.hypothesis_tests.map((ht) => (
-                        <li key={ht.hypothesis_index}>
-                          <strong>H{ht.hypothesis_index + 1}</strong> —{" "}
-                          {ht.comparison_or_variable}
-                          {ht.data_source ? (
-                            <span> · Donnée : {ht.data_source}</span>
-                          ) : null}
-                        </li>
+                      {topic.stakes.map((s, i) => (
+                        <li key={i}>{s}</li>
                       ))}
                     </ul>
-                  </details>
+                  </div>
                 ) : null}
-                <div className="topic-kv">
-                  <strong>Terrain / corpus</strong>
-                  <ClampText>
-                    <p>{topic.field_or_corpus}</p>
-                  </ClampText>
-                </div>
-                <div className="topic-kv">
-                  <strong>Méthode</strong>
-                  <ClampText>
-                    <p>{topic.method}</p>
-                  </ClampText>
-                </div>
-                <div className="topic-kv topic-kv-inline">
-                  <strong>Faisabilité</strong>
-                  <p>
-                    <span
-                      className={
-                        "topic-feasibility level-" + topic.feasibility.level
-                      }
-                    >
-                      {topic.feasibility.level === "high"
-                        ? "Élevée"
-                        : topic.feasibility.level === "medium"
-                          ? "Moyenne"
-                          : "Faible"}
-                    </span>
-                    {topic.feasibility.first_steps[0]
-                      ? ` · ${topic.feasibility.first_steps[0]}`
-                      : ""}
-                  </p>
-                </div>
-                {typeof topic.estimated_hours === "number" ? (
-                  <p className="topic-fieldwork-hours" role="status">
-                    Charge estimée de collecte et d&apos;analyse : ~
-                    {topic.estimated_hours} h sur {availableFieldHours} h
-                    disponibles
-                  </p>
+                {topic.leads && topic.leads.length > 0 ? (
+                  <div className="topic-kv topic-leads">
+                    <strong>Pistes</strong>
+                    <ul>
+                      {topic.leads.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </div>
                 ) : null}
+
+                <details className="topic-details">
+                  <summary>Détails du projet</summary>
+                  <div className="topic-details-body">
+                    {topic.context ? (
+                      <div className="topic-kv topic-kv-context">
+                        <strong>Contexte</strong>
+                        <ClampText lines={4}>
+                          <p>{topic.context}</p>
+                        </ClampText>
+                      </div>
+                    ) : null}
+                    {topic.research_object ? (
+                      <div className="topic-kv">
+                        <strong>Objet</strong>
+                        <ClampText>
+                          <p>{topic.research_object}</p>
+                        </ClampText>
+                      </div>
+                    ) : null}
+                    <div className="topic-kv">
+                      <strong>Hypothèses</strong>
+                      <ul>
+                        {topic.hypotheses.map((h, i) => (
+                          <li key={i}>{h}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    {topic.hypothesis_tests &&
+                    topic.hypothesis_tests.length > 0 ? (
+                      <div className="topic-kv">
+                        <strong>Comment tester les hypothèses</strong>
+                        <ul>
+                          {topic.hypothesis_tests.map((ht) => (
+                            <li key={ht.hypothesis_index}>
+                              <strong>H{ht.hypothesis_index + 1}</strong> —{" "}
+                              {ht.comparison_or_variable}
+                              {ht.data_source ? (
+                                <span> · Donnée : {ht.data_source}</span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    <div className="topic-kv">
+                      <strong>Terrain / corpus</strong>
+                      <ClampText>
+                        <p>{topic.field_or_corpus}</p>
+                      </ClampText>
+                    </div>
+                    <div className="topic-kv">
+                      <strong>Méthode</strong>
+                      <ClampText>
+                        <p>{topic.method}</p>
+                      </ClampText>
+                    </div>
+                    {typeof topic.estimated_hours === "number" ? (
+                      <p className="topic-fieldwork-hours" role="status">
+                        Charge estimée de collecte et d&apos;analyse : ~
+                        {topic.estimated_hours} h sur {availableFieldHours} h
+                        disponibles
+                      </p>
+                    ) : null}
+                    <div className="topic-kv topic-kv-inline">
+                      <strong>Faisabilité</strong>
+                      <p>
+                        <span
+                          className={
+                            "topic-feasibility level-" +
+                            topic.feasibility.level
+                          }
+                        >
+                          {topic.feasibility.level === "high"
+                            ? "Élevée"
+                            : topic.feasibility.level === "medium"
+                              ? "Moyenne"
+                              : "Faible"}
+                        </span>
+                      </p>
+                    </div>
+                    {topic.feasibility.first_steps.length > 0 ? (
+                      <div className="topic-kv">
+                        <strong>Premières étapes</strong>
+                        <ul>
+                          {topic.feasibility.first_steps.map((s, i) => (
+                            <li key={i}>{s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {topic.expected_contribution ? (
+                      <div className="topic-kv">
+                        <strong>Apport attendu</strong>
+                        <ClampText>
+                          <p>{topic.expected_contribution}</p>
+                        </ClampText>
+                      </div>
+                    ) : null}
+                    <div className="topic-keywords">
+                      {topic.keywords_fr.slice(0, 6).map((k) => (
+                        <span key={k}>{k}</span>
+                      ))}
+                    </div>
+                    {topic.ethical_notes ? (
+                      <div className="topic-kv">
+                        <strong>Précautions éthiques</strong>
+                        <ClampText>
+                          <p>{topic.ethical_notes}</p>
+                        </ClampText>
+                      </div>
+                    ) : null}
+                    <ReadingsBlock
+                      readings={readings}
+                      loading={loadingReadings}
+                      keywords={keywordHints}
+                    />
+                  </div>
+                </details>
+
                 {topic.literature_density === "high" ? (
                   <p className="topic-literature-density" role="status">
                     Thème déjà bien étudié : précisez ce que votre travail
@@ -704,9 +908,9 @@ export default function TopicResults({
                   </p>
                 ) : null}
                 {topic.warnings && topic.warnings.length > 0
-                  ? topic.warnings.map((w) => (
+                  ? topic.warnings.map((w, i) => (
                       <p
-                        key={w.code}
+                        key={`${w.code}-${i}`}
                         className={
                           "topic-warning" +
                           (w.code === "UNDER_SCALE"
@@ -719,45 +923,6 @@ export default function TopicResults({
                       </p>
                     ))
                   : null}
-                {topic.expected_contribution ? (
-                  <div className="topic-kv">
-                    <strong>Apport attendu</strong>
-                    <ClampText>
-                      <p>{topic.expected_contribution}</p>
-                    </ClampText>
-                  </div>
-                ) : null}
-                {(topic.rationale ||
-                  (topic.profile_links && topic.profile_links.length > 0)) && (
-                  <div className="topic-kv topic-why">
-                    <strong>Pourquoi ce sujet pour vous</strong>
-                    {topic.rationale ? (
-                      <ClampText>
-                        <p>{topic.rationale}</p>
-                      </ClampText>
-                    ) : null}
-                    {topic.profile_links && topic.profile_links.length > 0 ? (
-                      <ul className="topic-profile-links">
-                        {topic.profile_links.map((link, i) => (
-                          <li key={i}>
-                            <em>{link.field}</em> — {link.profile_value} →{" "}
-                            {link.use}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                  </div>
-                )}
-                <div className="topic-keywords">
-                  {topic.keywords_fr.slice(0, 4).map((k) => (
-                    <span key={k}>{k}</span>
-                  ))}
-                </div>
-                <ReadingsBlock
-                  readings={readings}
-                  loading={loadingReadings}
-                  keywords={keywordHints}
-                />
               </div>
 
               <div className="topic-card-actions">
